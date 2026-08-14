@@ -1,10 +1,12 @@
 #Requires -Version 5.1
 <#
-    OpenForensic - menu interaktif berbasis kasus.
+    OpenForensic - menu interaktif berbasis kasus (lintas platform).
 
-    Menu tipis: seluruh logika ada di modul (OpenForensic.psm1, .Workflow.psm1, .Ai.psm1,
-    .Integrity.psm1, .Timeline.psm1, .Models.psm1) sehingga menu, CLI (run.ps1 / case.ps1),
-    dan test memakai kode yang sama.
+    Menu tipis: seluruh logika ada di modul (OpenForensic.psm1, .Platform.psm1, .Workflow.psm1,
+    .Ai.psm1, .Integrity.psm1, .Timeline.psm1, .Models.psm1) sehingga menu, CLI (run.ps1 /
+    case.ps1), dan test memakai kode yang sama.
+
+    Berjalan di Windows (PowerShell 5.1 atau 7) serta Linux dan macOS (PowerShell 7).
 #>
 
 [CmdletBinding()]
@@ -22,6 +24,16 @@ Initialize-OFWorkspace
 
 $script:ActiveCase = $null
 
+# Deteksi platform sekali saja; dipakai untuk menyesuaikan opsi kunci segel.
+$script:MenuOnWindows = $true
+if (Get-Command Test-OFWindows -ErrorAction SilentlyContinue) {
+    $script:MenuOnWindows = [bool](Test-OFWindows)
+}
+$script:MenuSealMode = 'dpapi'
+if (Get-Command Get-OFSecureStorageMode -ErrorAction SilentlyContinue) {
+    $script:MenuSealMode = [string](Get-OFSecureStorageMode)
+}
+
 function Show-OFBanner {
     Clear-Host
     Write-Host ''
@@ -32,6 +44,10 @@ function Show-OFBanner {
     Write-Host '  \___/|_|   \___|_| |_||_|  \___/|_|  \___|_| |_|___/_|\___|' -ForegroundColor Cyan
     Write-Host ''
     Write-Host '        Toolkit Forensik Digital - alur kerja end-to-end' -ForegroundColor DarkGray
+    if (Get-Command Get-OFPlatform -ErrorAction SilentlyContinue) {
+        $platform = Get-OFPlatform
+        Write-Host "        Lingkungan: $($platform.Os) $($platform.Architecture) | PowerShell $($platform.PSVersion) $($platform.PSEdition)" -ForegroundColor DarkGray
+    }
     $config = Get-OFAiConfig
     $activeModel = @(Get-OFAiModelList | Where-Object { $_.Active })
     $modelLabel = if ($activeModel.Count -gt 0) { " [profil: $($activeModel[0].Name)]" } else { '' }
@@ -77,6 +93,7 @@ function Show-OFMenu {
     Write-Host ' 21. Daftar report lama'
     Write-Host ' 22. Update tool & dependensi'
     Write-Host ' 23. Hapus API key tersimpan'
+    Write-Host ' 24. Diagnostik lingkungan (OS, PowerShell, kemampuan platform)' -ForegroundColor Green
     Write-Host '  0. Keluar'
     Write-Host ''
 }
@@ -87,6 +104,32 @@ function Get-OFActiveCase {
         return $null
     }
     return $script:ActiveCase
+}
+
+function Read-OFSealPassphrase {
+    <#
+        Menentukan mode kunci segel sesuai platform:
+        - Windows  : DPAPI (default) atau passphrase.
+        - Non-Windows: passphrase wajib, karena DPAPI hanya ada di Windows.
+        Mengembalikan securestring, atau $null bila memakai DPAPI.
+    #>
+    param([switch]$Required)
+
+    if ($script:MenuSealMode -ne 'dpapi') {
+        Write-Host '[i] Platform ini tidak mendukung DPAPI; segel memakai passphrase (PBKDF2-SHA256).' -ForegroundColor DarkGray
+        Write-Host '    Simpan passphrase dengan aman - tanpa passphrase, segel tidak dapat diverifikasi.' -ForegroundColor DarkGray
+        return (Read-Host 'Passphrase segel' -AsSecureString)
+    }
+
+    if ($Required) {
+        return (Read-Host 'Passphrase segel' -AsSecureString)
+    }
+
+    $mode = Read-Host 'Mode kunci segel: [1] DPAPI mesin ini (default) atau [2] passphrase lintas mesin'
+    if ($mode -eq '2') {
+        return (Read-Host 'Passphrase segel (tidak dapat dipulihkan bila lupa)' -AsSecureString)
+    }
+    return $null
 }
 
 function Select-OFCaseEvidence {
@@ -119,7 +162,7 @@ function Invoke-OFMenuNewCase {
 
     $paths = New-Object System.Collections.ArrayList
     while ($true) {
-        $file = Select-OFTargetFile -Title 'Pilih file bukti (Cancel untuk berhenti menambah)'
+        $file = Select-OFTargetFile -Title 'Pilih file bukti (kosongkan / Cancel untuk berhenti menambah)'
         if (-not $file) { break }
         [void]$paths.Add($file)
         Write-Host "    [+] $file" -ForegroundColor DarkGray
@@ -259,10 +302,7 @@ function Invoke-OFMenuComplete {
     $useAi = Read-Host 'Sertakan analisa AI mendalam? (y/N)'
     $seal = Read-Host 'Segel kasus di akhir? (Y/n)'
     $passphrase = $null
-    if ($seal -notmatch '^[nN]$') {
-        $mode = Read-Host 'Mode kunci segel: [1] DPAPI mesin ini (default) atau [2] passphrase'
-        if ($mode -eq '2') { $passphrase = Read-Host 'Passphrase segel (ingat baik-baik)' -AsSecureString }
-    }
+    if ($seal -notmatch '^[nN]$') { $passphrase = Read-OFSealPassphrase }
 
     if ($passphrase) {
         Invoke-OFCompleteWorkflow -Case $case -SkipAnalysis:$false -UseAi:($useAi -match '^[yY]$') `
@@ -322,6 +362,7 @@ function Invoke-OFMenuIntegrity {
     $case = Get-OFActiveCase
     if (-not $case) { return }
     Write-Host ''
+    Write-Host "  Mode kunci segel di platform ini: $($script:MenuSealMode)" -ForegroundColor DarkGray
     Write-Host '  1. Segel kasus (versi tool -> manifest -> segel -> verifikasi)'
     Write-Host '  2. Verifikasi integritas kasus sekarang'
     Write-Host '  3. Perbarui snapshot versi tool saja'
@@ -330,16 +371,15 @@ function Invoke-OFMenuIntegrity {
     $choice = Read-OFChoice -Prompt 'Pilihan' -MinValue 0 -MaxValue 4
     switch ([int]$choice) {
         1 {
-            $mode = Read-Host 'Mode kunci: [1] DPAPI mesin ini (default) atau [2] passphrase lintas mesin'
-            if ($mode -eq '2') {
-                $passphrase = Read-Host 'Passphrase segel (tidak dapat dipulihkan bila lupa)' -AsSecureString
+            $passphrase = Read-OFSealPassphrase
+            if ($passphrase) {
                 Invoke-OFCaseSealWorkflow -Case $case -Passphrase $passphrase | Out-Null
             } else {
                 Invoke-OFCaseSealWorkflow -Case $case | Out-Null
             }
         }
         2 {
-            $usePass = Read-Host 'Segel memakai passphrase? (y/N)'
+            $usePass = if ($script:MenuSealMode -ne 'dpapi') { 'y' } else { Read-Host 'Segel memakai passphrase? (y/N)' }
             $status = if ($usePass -match '^[yY]$') {
                 Get-OFIntegrityStatus -Case $case -Passphrase (Read-Host 'Passphrase segel' -AsSecureString)
             } else {
@@ -492,10 +532,34 @@ function Invoke-OFMenuQuickScan {
     if ($ai -match '^[yY]$') { Invoke-OFAiAnalysis -ReportPath $report.TextPath | Out-Null }
 }
 
+function Invoke-OFMenuDoctor {
+    if (Get-Command Format-OFPlatformSummary -ErrorAction SilentlyContinue) {
+        Write-Host (Format-OFPlatformSummary -IncludeMatrix) | Out-Host
+    } elseif (Get-Command Get-OFPlatform -ErrorAction SilentlyContinue) {
+        Get-OFPlatform | Format-List | Out-Host
+    } else {
+        Write-Host '[-] Modul platform tidak tersedia.' -ForegroundColor Red
+        return
+    }
+    Write-Host ''
+    Write-Host ' Lokasi data:' -ForegroundColor Yellow
+    Get-OFPath | Format-List | Out-Host
+    $tools = @(Get-OFToolStatus)
+    $ready = @($tools | Where-Object { $_.Available })
+    Write-Host (" Tool siap pakai: {0} dari {1}" -f $ready.Count, $tools.Count) -ForegroundColor Yellow
+    $missing = @($tools | Where-Object { -not $_.Available } | Select-Object -First 10)
+    if ($missing.Count -gt 0) {
+        Write-Host ' Belum terpasang (10 pertama):' -ForegroundColor DarkGray
+        foreach ($tool in $missing) {
+            Write-Host ("  - {0}: {1}" -f $tool.Id, $tool.InstallHint) -ForegroundColor DarkGray
+        }
+    }
+}
+
 while ($true) {
     Show-OFBanner
     Show-OFMenu
-    $selection = Read-OFChoice -Prompt 'Pilih menu' -MinValue 0 -MaxValue 23
+    $selection = Read-OFChoice -Prompt 'Pilih menu' -MinValue 0 -MaxValue 24
     if ($null -eq $selection) { break }
 
     try {
@@ -513,7 +577,7 @@ while ($true) {
             6 { Invoke-OFMenuShowCase }
             7 {
                 $case = Get-OFActiveCase
-                if ($case) { Export-OFCaseReport -Case $case -Format Both -IncludeArtifacts | Out-Null }
+                if ($case) { Export-OFCaseReport -Case $case -Format Both -IncludeArtifacts -IncludePlatformMatrix | Out-Null }
             }
             8 { Invoke-OFMenuComplete }
             9 { Invoke-OFMenuTimeline }
@@ -554,6 +618,7 @@ while ($true) {
             21 { Get-OFReportList | Select-Object Name, LastWriteTime, Length | Format-Table -AutoSize | Out-Host }
             22 { Update-OFTool }
             23 { Clear-OFApiKey }
+            24 { Invoke-OFMenuDoctor }
         }
     } catch {
         Write-Host "[-] Terjadi kesalahan: $($_.Exception.Message)" -ForegroundColor Red
