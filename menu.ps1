@@ -2,8 +2,9 @@
 <#
     OpenForensic - menu interaktif berbasis kasus.
 
-    Menu tipis: seluruh logika ada di modul (OpenForensic.psm1, .Workflow.psm1, .Ai.psm1)
-    sehingga menu, CLI (run.ps1 / case.ps1), dan test memakai kode yang sama.
+    Menu tipis: seluruh logika ada di modul (OpenForensic.psm1, .Workflow.psm1, .Ai.psm1,
+    .Integrity.psm1, .Timeline.psm1, .Models.psm1) sehingga menu, CLI (run.ps1 / case.ps1),
+    dan test memakai kode yang sama.
 #>
 
 [CmdletBinding()]
@@ -32,7 +33,9 @@ function Show-OFBanner {
     Write-Host ''
     Write-Host '        Toolkit Forensik Digital - alur kerja end-to-end' -ForegroundColor DarkGray
     $config = Get-OFAiConfig
-    Write-Host "        AI: $($config.provider) / $($config.model)" -ForegroundColor DarkGray
+    $activeModel = @(Get-OFAiModelList | Where-Object { $_.Active })
+    $modelLabel = if ($activeModel.Count -gt 0) { " [profil: $($activeModel[0].Name)]" } else { '' }
+    Write-Host "        AI: $($config.provider) / $($config.model)$modelLabel" -ForegroundColor DarkGray
     if ($script:ActiveCase) {
         $summary = Get-OFCaseSummary -Case $script:ActiveCase
         Write-Host "        Kasus aktif: $($summary.CaseId)" -ForegroundColor Green
@@ -47,25 +50,33 @@ function Show-OFMenu {
     Write-Host ' ALUR KERJA KASUS' -ForegroundColor Yellow
     Write-Host '  1. Kasus baru + jalankan alur end-to-end (bukti -> tool -> temuan -> report)'
     Write-Host '  2. Buka / lanjutkan kasus yang ada'
-    Write-Host '  3. Tambah bukti ke kasus aktif'
+    Write-Host '  3. Tambah bukti ke kasus aktif (duplikat dilewati otomatis)'
     Write-Host '  4. Analisa bukti pada kasus aktif (otomatis sesuai tipe file)'
     Write-Host '  5. Jalankan satu tool dari katalog pada bukti kasus aktif'
     Write-Host '  6. Lihat temuan / artefak / ringkasan kasus aktif'
     Write-Host '  7. Ekspor report kasus (Markdown + HTML)'
+    Write-Host '  8. ALUR LENGKAP satu langkah: analisa -> timeline -> MITRE -> AI -> report -> segel' -ForegroundColor Green
+    Write-Host ''
+    Write-Host ' TIMELINE, IOC, DAN INTEGRITAS' -ForegroundColor Yellow
+    Write-Host '  9. Bangun timeline ternormalisasi + pemetaan MITRE ATT&CK'
+    Write-Host ' 10. Ekspor IOC (CSV / JSON / STIX 2.1 / MISP)'
+    Write-Host ' 11. Integritas kasus (manifest, segel, verifikasi, versi tool)'
     Write-Host ''
     Write-Host ' AI ASSISTANCE' -ForegroundColor Yellow
-    Write-Host '  8. AI analisa kasus (korelasi artefak -> temuan + ringkasan eksekutif)'
-    Write-Host '  9. AI guided analysis (AI memilih tool berikutnya, Anda menyetujui)'
-    Write-Host ' 10. AI assistant interaktif (tanya jawab + aksi)'
-    Write-Host ' 11. AI buat report lengkap (analisa + ekspor)'
-    Write-Host ' 12. Konfigurasi AI (provider, model, redaksi data)'
+    Write-Host ' 12. AI analisa kasus (korelasi artefak -> temuan + ringkasan eksekutif)'
+    Write-Host ' 13. AI analisa MENDALAM (memakai timeline, MITRE, dan status integritas)' -ForegroundColor Green
+    Write-Host ' 14. AI guided analysis (AI memilih tool berikutnya, Anda menyetujui)'
+    Write-Host ' 15. AI assistant interaktif (tanya jawab + aksi)'
+    Write-Host ' 16. AI buat report lengkap (analisa + ekspor)'
+    Write-Host ' 17. Manajer model AI (tambah model sendiri, uji, aktifkan)' -ForegroundColor Green
+    Write-Host ' 18. Konfigurasi AI (provider, model, redaksi data)'
     Write-Host ''
     Write-Host ' UTILITAS' -ForegroundColor Yellow
-    Write-Host ' 13. Analisa cepat satu file (tanpa kasus)'
-    Write-Host ' 14. Status tool terpasang'
-    Write-Host ' 15. Daftar report lama'
-    Write-Host ' 16. Update tool & dependensi'
-    Write-Host ' 17. Hapus API key tersimpan'
+    Write-Host ' 19. Analisa cepat satu file (tanpa kasus)'
+    Write-Host ' 20. Status tool terpasang'
+    Write-Host ' 21. Daftar report lama'
+    Write-Host ' 22. Update tool & dependensi'
+    Write-Host ' 23. Hapus API key tersimpan'
     Write-Host '  0. Keluar'
     Write-Host ''
 }
@@ -145,10 +156,20 @@ function Invoke-OFMenuAddEvidence {
     if (-not $case) { return }
     $file = Select-OFTargetFile -Title 'Pilih file bukti untuk ditambahkan'
     if (-not $file) { return }
+
+    $duplicate = Test-OFEvidenceDuplicate -Case $case -Path $file
+    if ($duplicate -and $duplicate.IsDuplicate) {
+        Write-Host "[i] Berkas ini identik dengan bukti $($duplicate.ExistingEvidenceId) yang sudah terdaftar." -ForegroundColor DarkYellow
+        $anyway = Read-Host 'Tambahkan juga? (y/N)'
+        if ($anyway -notmatch '^[yY]$') { return }
+    }
+
     $description = Read-Host 'Keterangan bukti (opsional)'
     $copyAnswer = Read-Host 'Buat salinan di folder kasus? (Y/n)'
     $evidence = Add-OFCaseEvidence -Case $case -Path $file -Description $description -Copy:($copyAnswer -notmatch '^[nN]$')
     if ($evidence) {
+        $protect = Read-Host 'Set bukti asli menjadi read-only (write-block lunak)? (Y/n)'
+        if ($protect -notmatch '^[nN]$') { Protect-OFEvidenceFile -Path $file | Out-Null }
         $analyze = Read-Host "Analisa $($evidence.id) sekarang? (Y/n)"
         if ($analyze -notmatch '^[nN]$') {
             Invoke-OFEvidenceAnalysis -Case $case -EvidenceId $evidence.id | Out-Null
@@ -219,6 +240,203 @@ function Invoke-OFMenuShowCase {
     }
     Write-Host ' ARTEFAK (20 teratas)' -ForegroundColor Yellow
     @($case.artifacts) | Select-Object -First 20 id, type, severity, value, count, evidenceId | Format-Table -AutoSize | Out-Host
+    $mitre = @(Get-OFMitreSummary -Case $case)
+    if ($mitre.Count -gt 0) {
+        Write-Host ' MITRE ATT&CK' -ForegroundColor Yellow
+        foreach ($tactic in $mitre) {
+            Write-Host ("  {0}: {1}" -f $tactic.tactic, ((@($tactic.techniques)) -join '; '))
+        }
+    }
+}
+
+function Invoke-OFMenuComplete {
+    $case = Get-OFActiveCase
+    if (-not $case) { return }
+    Write-Host ''
+    Write-Host ' Alur lengkap akan menjalankan: analisa bukti yang belum diperiksa, timeline' -ForegroundColor DarkGray
+    Write-Host ' ternormalisasi, pemetaan MITRE, snapshot versi tool, report, ekspor timeline' -ForegroundColor DarkGray
+    Write-Host ' dan IOC, lalu manifest + segel kasus.' -ForegroundColor DarkGray
+    $useAi = Read-Host 'Sertakan analisa AI mendalam? (y/N)'
+    $seal = Read-Host 'Segel kasus di akhir? (Y/n)'
+    $passphrase = $null
+    if ($seal -notmatch '^[nN]$') {
+        $mode = Read-Host 'Mode kunci segel: [1] DPAPI mesin ini (default) atau [2] passphrase'
+        if ($mode -eq '2') { $passphrase = Read-Host 'Passphrase segel (ingat baik-baik)' -AsSecureString }
+    }
+
+    if ($passphrase) {
+        Invoke-OFCompleteWorkflow -Case $case -SkipAnalysis:$false -UseAi:($useAi -match '^[yY]$') `
+            -SkipSeal:($seal -match '^[nN]$') -SealPassphrase $passphrase | Out-Null
+    } else {
+        Invoke-OFCompleteWorkflow -Case $case -SkipAnalysis:$false -UseAi:($useAi -match '^[yY]$') `
+            -SkipSeal:($seal -match '^[nN]$') | Out-Null
+    }
+}
+
+function Invoke-OFMenuTimeline {
+    $case = Get-OFActiveCase
+    if (-not $case) { return }
+    Write-Host ''
+    Write-Host '  1. Bangun timeline (state kasus + CSV di folder artifacts) + pemetaan MITRE'
+    Write-Host '  2. Impor satu berkas CSV tool (Hayabusa / Chainsaw / MFTECmd / lain)'
+    Write-Host '  3. Tampilkan timeline (severity medium ke atas)'
+    Write-Host '  4. Ekspor timeline (CSV / JSON / Markdown)'
+    Write-Host '  0. Kembali'
+    $choice = Read-OFChoice -Prompt 'Pilihan' -MinValue 0 -MaxValue 4
+    switch ([int]$choice) {
+        1 { Invoke-OFTimelineWorkflow -Case $case -IncludeExaminerActions | Out-Null }
+        2 {
+            $file = Select-OFTargetFile -Title 'Pilih CSV keluaran tool'
+            if ($file) { Import-OFTimelineCsv -Case $case -Path $file | Out-Null }
+        }
+        3 {
+            $events = @(Get-OFTimeline -Case $case -MinSeverity medium -Deduplicate)
+            if ($events.Count -eq 0) {
+                Write-Host '[i] Belum ada kejadian. Jalankan opsi 1 dulu.' -ForegroundColor DarkGray
+            } else {
+                $events | Select-Object timestamp, source, severity, actor, action, target |
+                    Format-Table -AutoSize | Out-Host
+            }
+        }
+        4 {
+            $format = Read-OFChoice -Prompt 'Format (Csv/Json/Markdown)' -Valid @('Csv', 'Json', 'Markdown', 'csv', 'json', 'markdown')
+            if ($format) {
+                $normalized = (Get-Culture).TextInfo.ToTitleCase($format.ToLowerInvariant())
+                Export-OFTimeline -Case $case -Format $normalized | Out-Null
+            }
+        }
+        default { return }
+    }
+}
+
+function Invoke-OFMenuIoc {
+    $case = Get-OFActiveCase
+    if (-not $case) { return }
+    $format = Read-OFChoice -Prompt 'Format IOC (Csv/Json/Stix/Misp)' -Valid @('Csv', 'Json', 'Stix', 'Misp', 'csv', 'json', 'stix', 'misp')
+    if (-not $format) { return }
+    $normalized = (Get-Culture).TextInfo.ToTitleCase($format.ToLowerInvariant())
+    Export-OFCaseIoc -Case $case -Format $normalized | Out-Null
+}
+
+function Invoke-OFMenuIntegrity {
+    $case = Get-OFActiveCase
+    if (-not $case) { return }
+    Write-Host ''
+    Write-Host '  1. Segel kasus (versi tool -> manifest -> segel -> verifikasi)'
+    Write-Host '  2. Verifikasi integritas kasus sekarang'
+    Write-Host '  3. Perbarui snapshot versi tool saja'
+    Write-Host '  4. Impor allowlist hash (mis. subset NSRL)'
+    Write-Host '  0. Kembali'
+    $choice = Read-OFChoice -Prompt 'Pilihan' -MinValue 0 -MaxValue 4
+    switch ([int]$choice) {
+        1 {
+            $mode = Read-Host 'Mode kunci: [1] DPAPI mesin ini (default) atau [2] passphrase lintas mesin'
+            if ($mode -eq '2') {
+                $passphrase = Read-Host 'Passphrase segel (tidak dapat dipulihkan bila lupa)' -AsSecureString
+                Invoke-OFCaseSealWorkflow -Case $case -Passphrase $passphrase | Out-Null
+            } else {
+                Invoke-OFCaseSealWorkflow -Case $case | Out-Null
+            }
+        }
+        2 {
+            $usePass = Read-Host 'Segel memakai passphrase? (y/N)'
+            $status = if ($usePass -match '^[yY]$') {
+                Get-OFIntegrityStatus -Case $case -Passphrase (Read-Host 'Passphrase segel' -AsSecureString)
+            } else {
+                Get-OFIntegrityStatus -Case $case
+            }
+            Write-Host ''
+            Write-Host (Format-OFIntegritySummary -Status $status)
+        }
+        3 {
+            $all = Read-Host 'Periksa seluruh katalog tool (bukan hanya yang dipakai)? (y/N)'
+            Update-OFCaseToolVersions -Case $case -AllTools:($all -match '^[yY]$') | Out-Null
+        }
+        4 {
+            $file = Select-OFTargetFile -Title 'Pilih berkas daftar hash SHA256'
+            if ($file) { Import-OFHashAllowlist -Path $file | Out-Null }
+        }
+        default { return }
+    }
+}
+
+function Invoke-OFMenuAiModels {
+    while ($true) {
+        Write-Host ''
+        Write-Host ' MANAJER MODEL AI' -ForegroundColor Yellow
+        $models = @(Get-OFAiModelList)
+        if ($models.Count -eq 0) {
+            Write-Host '  (belum ada model terdaftar)' -ForegroundColor DarkGray
+        } else {
+            $models | Select-Object Name, Active, BaseProvider, Model, Local, KeyEnvVar, KeyReady |
+                Format-Table -AutoSize | Out-Host
+        }
+        Write-Host '  1. Tambah model dari preset (OpenAI, OpenRouter, Groq, Ollama, LM Studio, dll.)'
+        Write-Host '  2. Tambah model manual (endpoint sendiri)'
+        Write-Host '  3. Aktifkan model'
+        Write-Host '  4. Uji model (ping + latensi, tanpa mengirim data bukti)'
+        Write-Host '  5. Uji semua model terdaftar'
+        Write-Host '  6. Hapus model'
+        Write-Host '  7. Daftarkan preset dasar (gemini, openai, ollama)'
+        Write-Host '  0. Kembali'
+        $choice = Read-OFChoice -Prompt 'Pilihan' -MinValue 0 -MaxValue 7
+        if ($null -eq $choice -or [int]$choice -eq 0) { return }
+
+        switch ([int]$choice) {
+            1 {
+                $presets = @(Get-OFAiModelPreset)
+                Write-Host ''
+                for ($i = 0; $i -lt $presets.Count; $i++) {
+                    $localMark = if ($presets[$i].Local) { 'LOKAL' } else { 'cloud' }
+                    Write-Host ("  {0}. {1} [{2}] - {3} ({4})" -f ($i + 1), $presets[$i].Preset, $localMark, $presets[$i].Model, $presets[$i].Notes)
+                }
+                $presetChoice = Read-OFChoice -Prompt 'Pilih preset' -MinValue 1 -MaxValue $presets.Count
+                if ($null -eq $presetChoice) { continue }
+                $preset = $presets[[int]$presetChoice - 1]
+                $name = Read-Host "Nama profil (default: $($preset.Preset))"
+                if (-not $name) { $name = $preset.Preset }
+                $model = Read-Host "Nama model (default: $($preset.Model))"
+                if (-not $model) { $model = $preset.Model }
+                Register-OFAiModel -Name $name -Preset $preset.Preset -Model $model -Force | Out-Null
+            }
+            2 {
+                $name = Read-Host 'Nama profil (mis. internal)'
+                if (-not $name) { continue }
+                $provider = Read-OFChoice -Prompt 'Protokol dasar (openai/gemini/ollama)' -Valid @('openai', 'gemini', 'ollama')
+                if (-not $provider) { continue }
+                $model = Read-Host 'Nama model (mis. qwen2.5-72b-instruct)'
+                $endpoint = Read-Host 'Endpoint (mis. https://ai.perusahaan.local/v1; kosong untuk default provider)'
+                $keyEnv = Read-Host 'Nama variabel environment API key (kosong bila model lokal)'
+                $isLocal = Read-Host 'Model ini berjalan lokal? (y/N)'
+                $arguments = @{
+                    Name         = $name
+                    BaseProvider = $provider
+                    Model        = $model
+                    KeyEnvVar    = $keyEnv
+                    Force        = $true
+                }
+                if ($endpoint) { $arguments['Endpoint'] = $endpoint }
+                if ($isLocal -match '^[yY]$') { $arguments['Local'] = $true }
+                Register-OFAiModel @arguments | Out-Null
+            }
+            3 {
+                if ($models.Count -eq 0) { continue }
+                $name = Read-Host 'Nama profil yang ingin diaktifkan'
+                if ($name) { Use-OFAiModel -Name $name | Out-Null }
+            }
+            4 {
+                $name = Read-Host 'Nama profil yang ingin diuji (kosong = konfigurasi aktif)'
+                if ($name) { Test-OFAiModel -Name $name | Format-List | Out-Host }
+                else { Test-OFAiModel | Format-List | Out-Host }
+            }
+            5 { Test-OFAiModelAll | Format-Table Name, Provider, Model, Ok, LatencySeconds -AutoSize | Out-Host }
+            6 {
+                $name = Read-Host 'Nama profil yang ingin dihapus'
+                if ($name) { Remove-OFAiModel -Name $name | Out-Null }
+            }
+            7 { Initialize-OFAiModelDefaults | Out-Null }
+        }
+    }
 }
 
 function Invoke-OFMenuAiConfig {
@@ -233,8 +451,9 @@ function Invoke-OFMenuAiConfig {
     Write-Host '  2. OpenAI-compatible (OpenAI, Azure, OpenRouter, LM Studio)'
     Write-Host '  3. Ollama (LOKAL - data bukti tidak keluar dari mesin, disarankan untuk bukti sensitif)'
     Write-Host '  4. Aktif/nonaktifkan redaksi data sensitif sebelum dikirim'
+    Write-Host '  5. Buka manajer model AI (profil model sendiri)'
     Write-Host '  0. Kembali'
-    $choice = Read-OFChoice -Prompt 'Pilihan' -MinValue 0 -MaxValue 4
+    $choice = Read-OFChoice -Prompt 'Pilihan' -MinValue 0 -MaxValue 5
     switch ([int]$choice) {
         1 {
             $model = Read-Host 'Model Gemini (default: gemini-1.5-flash)'
@@ -257,6 +476,7 @@ function Invoke-OFMenuAiConfig {
             $current = (Get-OFAiConfig).redact
             Set-OFAiConfig -Redact (-not $current) | Out-Null
         }
+        5 { Invoke-OFMenuAiModels }
         default { return }
     }
 }
@@ -275,7 +495,7 @@ function Invoke-OFMenuQuickScan {
 while ($true) {
     Show-OFBanner
     Show-OFMenu
-    $selection = Read-OFChoice -Prompt 'Pilih menu' -MinValue 0 -MaxValue 17
+    $selection = Read-OFChoice -Prompt 'Pilih menu' -MinValue 0 -MaxValue 23
     if ($null -eq $selection) { break }
 
     try {
@@ -295,11 +515,19 @@ while ($true) {
                 $case = Get-OFActiveCase
                 if ($case) { Export-OFCaseReport -Case $case -Format Both -IncludeArtifacts | Out-Null }
             }
-            8 {
+            8 { Invoke-OFMenuComplete }
+            9 { Invoke-OFMenuTimeline }
+            10 { Invoke-OFMenuIoc }
+            11 { Invoke-OFMenuIntegrity }
+            12 {
                 $case = Get-OFActiveCase
                 if ($case) { Invoke-OFAiCaseAnalysis -Case $case | Out-Null }
             }
-            9 {
+            13 {
+                $case = Get-OFActiveCase
+                if ($case) { Invoke-OFAiDeepAnalysis -Case $case | Out-Null }
+            }
+            14 {
                 $case = Get-OFActiveCase
                 if ($case) {
                     $selected = Select-OFCaseEvidence -Case $case
@@ -308,23 +536,24 @@ while ($true) {
                     }
                 }
             }
-            10 {
+            15 {
                 $case = Get-OFActiveCase
                 if ($case) { Start-OFAiAssistant -Case $case }
             }
-            11 {
+            16 {
                 $case = Get-OFActiveCase
                 if ($case) { New-OFAiCaseReport -Case $case -Format Both | Out-Null }
             }
-            12 { Invoke-OFMenuAiConfig }
-            13 { Invoke-OFMenuQuickScan }
-            14 {
+            17 { Invoke-OFMenuAiModels }
+            18 { Invoke-OFMenuAiConfig }
+            19 { Invoke-OFMenuQuickScan }
+            20 {
                 Get-OFToolStatus | Select-Object Id, Name, Category, Available, Path |
                     Format-Table -AutoSize | Out-Host
             }
-            15 { Get-OFReportList | Select-Object Name, LastWriteTime, Length | Format-Table -AutoSize | Out-Host }
-            16 { Update-OFTool }
-            17 { Clear-OFApiKey }
+            21 { Get-OFReportList | Select-Object Name, LastWriteTime, Length | Format-Table -AutoSize | Out-Host }
+            22 { Update-OFTool }
+            23 { Clear-OFApiKey }
         }
     } catch {
         Write-Host "[-] Terjadi kesalahan: $($_.Exception.Message)" -ForegroundColor Red
