@@ -1,181 +1,215 @@
 # OpenForensic
 
-Toolkit forensik digital & CTF untuk Windows dengan **alur kerja end-to-end berbasis kasus**:
-satu perintah membawa Anda dari file bukti sampai laporan siap lampir.
+**Toolkit forensik digital berbasis PowerShell dengan alur kerja end-to-end dan AI assistance.**
 
-```
-BUKTI -> TOOL -> ARTEFAK -> TEMUAN -> REPORT
-   (hash & chain of custody, pemilihan tool otomatis, 31 detektor artefak,
-    korelasi + narasi dibantu AI, ekspor Markdown + HTML)
-```
+Satu alur: **KASUS -> BUKTI -> TOOL -> ARTEFAK -> TEMUAN -> TIMELINE + MITRE -> REPORT + IOC -> SEGEL INTEGRITAS**.
+Semua state kasus hidup di satu berkas `cases/<CaseId>/case.json`, sehingga menu interaktif, CLI,
+AI, dan test memakai kode dan data yang sama.
 
-> **Disclaimer:** gunakan hanya pada sistem, file, dan data yang Anda miliki atau yang Anda
-> punya izin tertulis untuk dianalisis. Penulis tidak bertanggung jawab atas penyalahgunaan.
+Versi: **0.4.0** | Platform: Windows (PowerShell 5.1) dan PowerShell 7 (Core) | Lisensi: MIT
 
-## Fitur utama
+> Peringatan profesional: perangkat ini membantu pemeriksaan, bukan menggantikan pemeriksa.
+> Setiap temuan (terutama yang dihasilkan AI) wajib diverifikasi manual sebelum dipakai
+> sebagai dasar kesimpulan atau bukti hukum.
 
-- **Satu alur kerja terintegrasi** - kasus, bukti, eksekusi tool, artefak, temuan, timeline,
-  chain of custody, dan report tersimpan dalam satu state `cases/<CaseId>/case.json`.
-  Pemeriksaan bisa dihentikan dan dilanjutkan kapan saja. Lihat [`docs/WORKFLOW.md`](docs/WORKFLOW.md).
-- **39 tool dalam katalog `tools.json`** - menambah tool baru tidak perlu mengubah kode.
-- **Pemilihan tool otomatis** - berdasarkan magic bytes, bukan ekstensi, sehingga file yang
-  ekstensinya dipalsukan tetap diperiksa dengan tool yang benar (dan langsung jadi temuan).
-- **31 detektor artefak** - IOC jaringan, kredensial, LOLBin, persistence, makro, PDF aktif,
-  blob base64, alamat kripto, flag CTF, sampai indikasi prompt injection.
-- **AI Assistance di 5 titik** - perencana tool, analisis terpandu, analis kasus, penulis
-  report, dan assistant interaktif. Multi provider termasuk **Ollama lokal**.
-  Lihat [`docs/AI.md`](docs/AI.md).
-- **Eksekusi aman** - argumen dilewatkan sebagai array, tanpa `Invoke-Expression` (dijaga CI),
-  sehingga nama file bukti tidak bisa dipakai untuk command injection.
-- **Integritas bukti** - MD5/SHA1/SHA256 dihitung sebelum dan sesudah analisis; perubahan hash
-  otomatis menjadi temuan severity `critical`.
-- **Report profesional** - 9 bagian, Markdown + HTML, memuat metode, log tool, temuan
-  berurut severity, timeline, chain of custody, dan pernyataan keterbatasan.
+---
 
-## Prasyarat
+## Kemampuan utama
 
-| Komponen | Keterangan |
+| Area | Isi |
 | --- | --- |
-| Windows 10/11 | PowerShell 5.1 atau PowerShell 7+ |
-| Python 3.8+ | harus ada di `PATH` (`python --version`) |
-| Git | untuk meng-clone Volatility 3 |
-| winget | opsional, untuk ExifTool / 7-Zip / Wireshark |
-| Ollama | opsional, untuk AI lokal tanpa mengirim data keluar |
+| Katalog tool | 39 tool DFIR/CTF terdaftar di `tools.json` (memori, dokumen, PE, jaringan, log Windows, disk, stego, mobile, crack) |
+| Alur kasus | Kasus, bukti berhash, chain of custody, eksekusi tool otomatis per tipe file, 31 detektor artefak, temuan berperingkat, report Markdown + HTML |
+| Timeline | Timeline ternormalisasi lintas sumber, impor CSV Hayabusa/Chainsaw/MFTECmd/evtx_dump, ekspor CSV/JSON/Markdown |
+| Threat intel | Pemetaan MITRE ATT&CK deterministik (plus MITRE ATLAS untuk prompt injection), ekspor IOC ke CSV/JSON/STIX 2.1/MISP |
+| Integritas | Manifest SHA256 seluruh kasus, segel HMAC (DPAPI atau PBKDF2), snapshot versi tool, write-block lunak, allowlist hash, deduplikasi bukti, timeout per proses |
+| AI | Multi provider, perencanaan tool, analisa korelasi, analisa mendalam berbasis timeline, report bernarasi, asisten interaktif, **registry model AI milik pengguna** |
 
-## Instalasi
+---
+
+## Instalasi cepat
 
 ```powershell
 git clone https://github.com/stmarya/OpenForensic.git
 cd OpenForensic
-powershell -ExecutionPolicy Bypass -File .\setup_tools.ps1
+
+# Pasang tool pihak ketiga (lihat docs/INSTALL.md untuk opsi lengkap)
+.\setup_tools.ps1
+
+# Menu interaktif
+.\openforensic.bat
 ```
 
-Opsi installer: `-SkipVolatility`, `-SkipWinget`, `-IncludeOptional`.
-Semua binary hasil unduhan masuk ke `bin/` dan tidak pernah di-commit.
-Tool yang belum terpasang otomatis dilewati (dengan petunjuk instalasi), bukan menggagalkan alur.
+Opsi installer: `-SkipVolatility -SkipPython -SkipWinget -SkipDownload -IncludeOptional -IncludeHeavy -Only <id> -Force`.
+Setiap unduhan dicatat lengkap dengan SHA256 di `bin/_downloads.log`.
 
-## Penggunaan
+---
 
-### 1. Alur end-to-end dalam satu perintah
+## Pemakaian
 
-```powershell
-# Bukti -> tool -> artefak -> temuan -> report, otomatis
-.\case.ps1 -Path .\bukti\dump.raw -CaseName "Insiden Workstation A"
-
-# Banyak bukti, salinan terverifikasi, plus analisa AI
-.\case.ps1 -Path .\bukti\*.docx -CaseName "Phishing Batch" -CopyEvidence -UseAi
-
-# AI memilih tool berikutnya, setiap rencana Anda setujui dulu
-.\case.ps1 -Path .\bukti\suspect.exe -CaseName "Malware Triage" -GuidedAi
-
-# Lanjutkan kasus yang sudah ada
-.\case.ps1 -List
-.\case.ps1 -CaseId CASE-20260814-231500-Insiden_A -AddEvidence .\bukti\baru.evtx -Analyze
-.\case.ps1 -CaseId CASE-20260814-231500-Insiden_A -AiAnalyze -Report
-```
-
-### 2. Menu interaktif
+### Menu interaktif
 
 ```powershell
 .\openforensic.bat
 ```
 
-Menu 1-7 alur kerja kasus, 8-12 lapisan AI, 13-17 utilitas (analisa cepat tanpa kasus,
-status tool, daftar report, update tool, hapus API key).
+23 pilihan, terbagi menjadi alur kerja kasus, timeline/IOC/integritas, AI assistance, dan utilitas.
+Menu 8 menjalankan alur lengkap satu langkah; menu 17 adalah manajer model AI.
 
-### 3. Mode CLI per tool
+### CLI berbasis kasus
 
 ```powershell
-.\openforensic.bat --list
-.\openforensic.bat vol -f memory.dmp windows.pslist
-.\run.ps1 -ToolId strings -TargetPath .\image.png
+# Kasus baru, semua tool yang cocok, AI, report, timeline, IOC, dan segel dalam satu perintah
+.\case.ps1 -Path .\bukti\memory.raw, .\bukti\invoice.docm -CaseName "Insiden Phishing" `
+          -Examiner "Nama Pemeriksa" -Classification confidential -Complete -UseAi -DeepAi -Seal
+
+# Daftar kasus
+.\case.ps1 -List
+
+# Lanjutkan kasus yang ada
+.\case.ps1 -CaseId CASE-20260815-093000-insiden-phishing -AddEvidence .\bukti\Security.evtx -Analyze
+.\case.ps1 -CaseId CASE-... -Timeline -ExportTimeline Csv -ExportIoc Stix
+.\case.ps1 -CaseId CASE-... -DeepAi -Report
+.\case.ps1 -CaseId CASE-... -VerifyIntegrity     # exit code 3 bila integritas bermasalah
 ```
 
-### 4. Sebagai modul PowerShell
+Exit code: `0` sukses, `1` kesalahan tak terduga, `2` argumen/manifest bermasalah, `3` verifikasi integritas gagal.
+
+### Modul PowerShell langsung
 
 ```powershell
 Import-Module .\OpenForensic.psd1 -Force
 
-$case = New-OFCase -Name 'Insiden Workstation A' -Reference 'TIKET-1234' -Classification confidential
-$e1   = Add-OFCaseEvidence -Case $case -Path .\bukti\invoice.docm -Copy
-
-Invoke-OFEvidenceAnalysis -Case $case -EvidenceId $e1.id      # tool otomatis sesuai tipe file
-Invoke-OFAiCaseAnalysis   -Case $case                         # korelasi + verdict + ringkasan
-Export-OFCaseReport       -Case $case -Format Both -IncludeArtifacts
+$case = New-OFCase -Name "Insiden Ransomware" -Examiner "Pemeriksa" -Classification restricted
+Add-OFCaseEvidence -Case $case -Path .\bukti\note.txt -Copy | Out-Null
+Invoke-OFEvidenceAnalysis -Case $case -AllTools | Out-Null
+Invoke-OFTimelineWorkflow -Case $case | Out-Null
+Invoke-OFCompleteWorkflow -Case $case -UseAi
 ```
 
-## Katalog tool (39)
+---
 
-| Kategori | Tool |
-| --- | --- |
-| Memori | Volatility 3, bulk_extractor |
-| Event log & timeline | evtx_dump, Hayabusa, Chainsaw, MFTECmd |
-| Registry | RegRipper |
-| Dokumen | oleid, olevba, mraptor, rtfobj, oleobj, oledump, zipdump, msoffcrypto-tool, pdfid, pdf-parser |
-| Reverse engineering | capa, FLOSS, rizin, uncompyle6, decompyle3, jadx |
-| Deteksi | YARA, ClamAV |
-| Metadata | ExifTool |
-| Stego | steghide, stegseek, zsteg, pngcheck |
-| Carving & arsip | binwalk, 7-Zip, PhotoRec |
-| Network | TShark, capinfos |
-| Aplikasi | SQLite3 |
-| Password | John the Ripper |
-| Decode | base64dump |
-| Built-in | strings (ASCII + UTF-16LE) |
+## AI assistance
 
-Setiap entri memiliki `phase` (triage/extract/analyze/timeline/crack) dan `aiHint` yang dipakai
-AI saat memilih tool. Catatan pemakaian: [`docs/TOOLS.md`](docs/TOOLS.md).
+Lima titik sentuh AI, semuanya memakai data kasus yang sama:
 
-Cek yang sudah terpasang di mesin Anda:
+1. `Invoke-OFAiToolPlan` - AI mengusulkan tool berikutnya, hanya dari id yang benar-benar ada di katalog.
+2. `Invoke-OFAiGuidedAnalysis` - loop rencana -> persetujuan pemeriksa -> eksekusi.
+3. `Invoke-OFAiCaseAnalysis` - korelasi artefak menjadi temuan, verdict, dan ringkasan eksekutif.
+4. `Invoke-OFAiDeepAnalysis` - analisa mendalam memakai timeline, pemetaan MITRE, dan status integritas;
+   menghasilkan kronologi naratif, penilaian dampak, catatan integritas, dan kesenjangan bukti.
+5. `Start-OFAiAssistant` - sesi interaktif (`/plan`, `/run`, `/analyze`, `/report`, `/findings`, `/evidence`).
+
+Pengaman AI: persetujuan eksplisit sebelum data bukti keluar dari mesin, redaksi otomatis data sensitif
+(email, token, AWS key, JWT, private key), pemagaran data bukti dengan penanda UNTRUSTED untuk memitigasi
+prompt injection, dan pembatasan aksi hanya pada tool yang tersedia. Untuk kasus `restricted`, gunakan
+model lokal (Ollama / LM Studio / vLLM) agar bukti tidak pernah meninggalkan mesin.
+
+### Menambahkan model AI sendiri
 
 ```powershell
-Get-OFToolStatus | Format-Table Id, Name, Category, Available
+# Lihat preset yang tersedia
+Get-OFAiModelPreset
+
+# Daftarkan dari preset
+Register-OFAiModel -Name kerja -Preset openrouter -Model 'anthropic/claude-3.5-sonnet'
+$env:OPENROUTER_API_KEY = '<api key Anda>'
+
+# Atau endpoint milik sendiri / on-premise
+Register-OFAiModel -Name internal -BaseProvider openai `
+    -Endpoint 'https://ai.perusahaan.local/v1' -Model 'qwen2.5-72b-instruct' `
+    -KeyEnvVar PERUSAHAAN_AI_KEY
+
+# Model lokal penuh untuk bukti sensitif
+Register-OFAiModel -Name lokal -Preset ollama -Model llama3.1
+
+Use-OFAiModel -Name kerja      # aktifkan
+Test-OFAiModel -Name kerja     # uji koneksi + latensi (tanpa mengirim data bukti)
+Get-OFAiModelList              # lihat semua profil dan kesiapan API key
 ```
 
-## Privasi & keamanan fitur AI
+Preset bawaan: `openai`, `azure`, `openrouter`, `groq`, `together`, `deepseek`, `mistral`, `gemini`,
+`lmstudio`, `vllm`, `ollama`. Profil disimpan di `.ai_models.json` (tidak di-commit) dan **API key tidak
+pernah ditulis ke berkas** - hanya nama variabel environment-nya. Detail: [`docs/AI-MODELS.md`](docs/AI-MODELS.md).
 
-1. AI **tidak pernah** mengeksekusi command bebas - hanya boleh memilih `toolId` yang ada di
-   `tools.json`; argumen dibangun oleh modul.
-2. Tidak ada data yang keluar tanpa **persetujuan eksplisit**; kasus berklasifikasi
-   `confidential`/`restricted` diberi peringatan dan saran memakai provider lokal.
-3. Data bukti dipagari penanda `UNTRUSTED` dan model diinstruksikan menolak instruksi di
-   dalamnya, lalu melaporkannya sebagai temuan **Indikasi prompt injection**.
-4. Temuan dari AI ditandai `[AI]` dengan `origin = ai` dan wajib diverifikasi pada log tool.
+---
+
+## Integritas dan reproduktifitas
 
 ```powershell
-Set-OFAiConfig -Provider ollama -Model llama3.1   # 100% lokal, data tidak keluar mesin
-Set-OFAiConfig -Provider gemini -Model gemini-1.5-flash
-Set-OFAiConfig -Redact $true                      # redaksi email/token/key sebelum dikirim
+Invoke-OFCaseSealWorkflow -Case $case                      # versi tool -> manifest -> segel -> verifikasi
+Get-OFIntegrityStatus -Case $case | Format-OFIntegritySummary
 ```
 
-API key dibaca berurutan: `$env:OPENFORENSIC_AI_KEY` -> `$env:GEMINI_API_KEY` /
-`$env:OPENAI_API_KEY` -> file `.ai_config` (terenkripsi DPAPI). Hapus dengan `Clear-OFApiKey`.
+- `case.manifest.sha256` mencatat hash dan ukuran seluruh berkas kasus.
+- `case.seal.json` menyegel manifest dengan HMAC-SHA256; kunci lewat DPAPI (mesin ini) atau PBKDF2
+  120.000 iterasi (passphrase, bisa diverifikasi pihak lain).
+- Snapshot versi tool membuat hasil pemeriksaan dapat direproduksi.
+- Allowlist hash menekan positif palsu, deduplikasi bukti mencegah bukti sama diperiksa dua kali.
 
-## Struktur repo
+Detail: [`docs/INTEGRITY.md`](docs/INTEGRITY.md).
 
-```
-OpenForensic.psd1              manifest modul (51 fungsi terekspor)
-OpenForensic.psm1              modul inti: hash, magic bytes, eksekusi aman, report, strings
-OpenForensic.Workflow.psm1     kasus, bukti, detektor artefak, temuan, timeline, report kasus
-OpenForensic.Ai.psm1           lapisan AI: provider, perencana tool, analis, penulis report
-tools.json                     katalog 39 tool (tipe file, argumen, fase, panduan AI)
-case.ps1                       CLI alur kerja end-to-end
-menu.ps1                       menu interaktif berbasis kasus
-run.ps1 / openforensic.bat     entry point CLI per tool
-setup_tools.ps1                installer dependensi
-cases/                         data kasus (gitignored: memuat data bukti)
-docs/WORKFLOW.md               panduan alur kerja end-to-end
-docs/AI.md                     panduan & batasan fitur AI
-docs/TOOLS.md                  catatan pemakaian tiap tool
-tests/                         Pester tests (inti + workflow + AI)
-```
+---
 
-## Pengembangan
+## Timeline, MITRE, dan IOC
 
 ```powershell
-Invoke-ScriptAnalyzer -Path . -Recurse -Settings .\PSScriptAnalyzerSettings.psd1
-Invoke-Pester -Path .\tests
+Invoke-OFTimelineWorkflow -Case $case -IncludeExaminerActions
+Get-OFTimeline -Case $case -MinSeverity medium -Deduplicate | Format-Table
+Get-OFMitreSummary -Case $case
+Export-OFTimeline -Case $case -Format Markdown
+Export-OFCaseIoc -Case $case -Format Stix
 ```
 
-Lihat [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), dan
-[CHANGELOG.md](CHANGELOG.md). Lisensi: [MIT](LICENSE).
+Detail: [`docs/TIMELINE.md`](docs/TIMELINE.md).
+
+---
+
+## Dokumentasi
+
+- [`docs/INSTALL.md`](docs/INSTALL.md) - installer, dependensi, dan pemasangan manual
+- [`docs/TOOLS.md`](docs/TOOLS.md) - katalog 39 tool dan cara menambah tool baru
+- [`docs/WORKFLOW.md`](docs/WORKFLOW.md) - alur kerja kasus end-to-end
+- [`docs/AI.md`](docs/AI.md) - lapisan AI dan pengamanannya
+- [`docs/AI-MODELS.md`](docs/AI-MODELS.md) - registry model AI milik pengguna
+- [`docs/INTEGRITY.md`](docs/INTEGRITY.md) - manifest, segel, allowlist, dan reproduktifitas
+- [`docs/TIMELINE.md`](docs/TIMELINE.md) - timeline, MITRE ATT&CK, dan ekspor IOC
+- [`SECURITY.md`](SECURITY.md) - kebijakan keamanan dan pelaporan kerentanan
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) - panduan kontribusi
+- [`CHANGELOG.md`](CHANGELOG.md) - riwayat perubahan
+
+---
+
+## Struktur proyek
+
+```
+OpenForensic.psd1              manifest modul (0.4.0, 90 fungsi terekspor)
+OpenForensic.psm1              inti: katalog tool, eksekusi aman, hash, tipe file, report
+OpenForensic.Workflow.psm1     kasus, bukti, artefak, temuan, report
+OpenForensic.Ai.psm1           provider AI, perencanaan, analisa, asisten
+OpenForensic.Integrity.psm1    manifest, segel, versi tool, allowlist, dedup, timeout
+OpenForensic.Timeline.psm1     timeline ternormalisasi, MITRE ATT&CK, ekspor IOC
+OpenForensic.Models.psm1       registry model AI pengguna, analisa mendalam, alur lengkap
+menu.ps1 / case.ps1 / run.ps1  antarmuka menu dan CLI
+setup_tools.ps1                installer tool pihak ketiga
+tools.json                     katalog 39 tool (schemaVersion 2)
+tests/                         Pester test untuk seluruh modul
+```
+
+---
+
+## Keamanan
+
+- Tidak ada `Invoke-Expression`; seluruh proses dijalankan dengan argumen berbentuk array sehingga
+  nama berkas bukti tidak dapat dipakai untuk command injection. CI menjaga pola ini.
+- API key dienkripsi DPAPI atau dibaca dari environment variable, tidak pernah plaintext di repo.
+- Data kasus (`cases/`, `artifacts/`, `reports/`) dan konfigurasi lokal tidak pernah di-commit.
+- TLS 1.2 dipaksa untuk semua panggilan jaringan.
+
+Laporkan kerentanan melalui [`SECURITY.md`](SECURITY.md).
+
+---
+
+## Lisensi
+
+MIT - lihat [`LICENSE`](LICENSE).
