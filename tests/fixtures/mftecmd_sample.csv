@@ -1,0 +1,5 @@
+EntryNumber,ParentPath,FileName,Extension,IsDirectory,FileSize,Created0x10,LastModified0x10,LastAccess0x10
+41216,.\Users\budi\Downloads,invoice_agustus.docm,.docm,False,84213,2026-08-10 02:11:33.4120000,2026-08-10 02:11:35.9010000,2026-08-10 02:15:02.1140000
+41217,.\Users\budi\AppData\Local\Temp,payload.bin,.bin,False,271360,2026-08-10 02:15:40.2210000,2026-08-10 02:15:40.9980000,2026-08-10 02:22:10.4400000
+41218,.\Users\budi\AppData\Local\Temp,payload.dll,.dll,False,133120,2026-08-10 02:15:47.7710000,2026-08-10 02:15:48.1030000,2026-08-10 02:22:09.8870000
+41219,.\Users\budi\Desktop,BACA_SAYA_PEMULIHAN.txt,.txt,False,1842,2026-08-10 02:41:19.6650000,2026-08-10 02:41:19.6650000,2026-08-10 02:41:20.0020000

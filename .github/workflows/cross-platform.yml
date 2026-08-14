@@ -1,0 +1,99 @@
+name: cross-platform
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test-matrix:
+    name: ${{ matrix.os }} / ${{ matrix.shell }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            shell: powershell   # PowerShell 5.1 (Desktop)
+          - os: windows-latest
+            shell: pwsh         # PowerShell 7 (Core)
+          - os: ubuntu-latest
+            shell: pwsh
+          - os: macos-latest
+            shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tampilkan versi PowerShell
+        shell: ${{ matrix.shell }}
+        run: $PSVersionTable | Format-List
+
+      - name: Pasang Pester
+        shell: ${{ matrix.shell }}
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          if (-not (Get-Module -ListAvailable Pester | Where-Object { $_.Version -ge [version]'5.3.0' })) {
+            Install-Module Pester -MinimumVersion 5.3.0 -Force -Scope CurrentUser -SkipPublisherCheck
+          }
+
+      - name: Validasi manifest modul
+        shell: ${{ matrix.shell }}
+        run: |
+          $manifest = Test-ModuleManifest .\OpenForensic.psd1
+          "Versi: $($manifest.Version)"
+          "Fungsi terekspor: $($manifest.ExportedFunctions.Count)"
+
+      - name: Impor modul dan cek platform
+        shell: ${{ matrix.shell }}
+        run: |
+          Import-Module .\OpenForensic.psd1 -Force -DisableNameChecking
+          Get-OFPlatform | Format-List
+          Test-OFPlatformCompatibility | Format-Table Feature, Supported -AutoSize
+
+      - name: Jalankan Pester
+        shell: ${{ matrix.shell }}
+        run: |
+          $configuration = New-PesterConfiguration
+          $configuration.Run.Path = '.\tests'
+          $configuration.Run.Throw = $true
+          $configuration.Output.Verbosity = 'Detailed'
+          $configuration.TestResult.Enabled = $true
+          $configuration.TestResult.OutputPath = "TestResults-${{ matrix.os }}-${{ matrix.shell }}.xml"
+          Invoke-Pester -Configuration $configuration
+
+      - name: Unggah hasil test
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pester-${{ matrix.os }}-${{ matrix.shell }}
+          path: TestResults-*.xml
+          if-no-files-found: ignore
+
+  shell-lint:
+    name: Lint script POSIX
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pasang shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
+      - name: shellcheck
+        run: shellcheck -S warning setup_tools.sh openforensic.sh
+      - name: Pastikan script POSIX dapat dieksekusi
+        run: |
+          bash -n setup_tools.sh
+          bash -n openforensic.sh
+          ./setup_tools.sh --list
+
+  docker-build:
+    name: Build image Docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: docker build -t openforensic:ci .
+      - name: Smoke test di dalam kontainer
+        run: |
+          docker run --rm --entrypoint pwsh openforensic:ci -NoLogo -NoProfile -Command \
+            "Import-Module /opt/openforensic/OpenForensic.psd1 -Force -DisableNameChecking; (Get-OFPlatform).Os; (Get-OFToolStatus | Where-Object Available).Count"

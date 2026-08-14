@@ -1,0 +1,17 @@
+OpenForensic synthetic evidence sample - aman untuk pengujian
+Download staging: http://198.51.100.23/update/payload.bin
+Secondary channel: https://cdn.example-malicious.test/beacon?id=4471
+Operator contact: operator@example-malicious.test
+Tor fallback: 7wrzn3zqvsjhq2ljzcvzqvgh2xg4vqzq3nkmvbcqzq7rjm4vqzq2ijid.onion
+Wallet BTC: 1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2
+Wallet ETH: 0x52908400098527886E0F7030069857D2E4169EE7
+Sample MD5: 5d41402abc4b2a76b9719d911017c592
+Sample SHA256: ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+Registry persistence: HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Updater
+Scheduled task: schtasks /create /tn UpdaterTask /tr payload.bin /sc minute /mo 5
+LOLBin usage: rundll32.exe payload.dll,EntryPoint
+Encoded command: powershell -enc SQBFAFgAIAAoAA==
+Credential-like string: password=Rahasia123!
+AWS-like key: AKIAIOSFODNN7EXAMPLE
+CTF marker: flag{sintetis_untuk_pengujian}
+Ransom hint: Your files have been encrypted. Send payment to restore them.

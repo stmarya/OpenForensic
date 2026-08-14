@@ -1,0 +1,7 @@
+Timestamp,Computer,Channel,EventID,Level,RuleTitle,Details
+2026-08-10T02:14:05.120Z,WKS-01,Security,4624,informational,Successful Logon,User: budi LogonType: 3 Source: 10.0.0.44
+2026-08-10T02:15:41.880Z,WKS-01,Microsoft-Windows-Sysmon/Operational,1,high,Suspicious PowerShell Encoded Command,CommandLine: powershell -enc SQBFAFgAIAAoAA==
+2026-08-10T02:16:02.310Z,WKS-01,Microsoft-Windows-TaskScheduler/Operational,106,medium,Scheduled Task Created,TaskName: UpdaterTask Action: payload.bin
+2026-08-10T02:18:57.640Z,WKS-01,Microsoft-Windows-Sysmon/Operational,13,high,Registry Run Key Persistence,TargetObject: HKCU Software Microsoft Windows CurrentVersion Run Updater
+2026-08-10T02:22:11.005Z,WKS-01,Microsoft-Windows-Sysmon/Operational,3,critical,Network Connection To Suspicious Host,DestinationIp: 198.51.100.23 DestinationPort: 80 Image: rundll32.exe
+2026-08-10T02:31:44.200Z,WKS-01,System,7045,high,Service Installed,ServiceName: UpdaterSvc ImagePath: payload.bin
