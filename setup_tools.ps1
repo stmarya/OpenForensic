@@ -1,17 +1,20 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Installer dependensi OpenForensic (39 tool).
+    Installer dependensi OpenForensic untuk Windows (39 tool).
 .DESCRIPTION
-    Memasang seluruh toolchain OpenForensic:
+    Memasang seluruh toolchain OpenForensic di Windows:
       1. Prasyarat (Python, Git, winget)
       2. Volatility 3
       3. Paket Python (oletools, yara-python, msoffcrypto-tool, dll)
       4. Tool via winget (ExifTool, 7-Zip, ClamAV, opsional Wireshark)
       5. Unduhan rilis GitHub (Hayabusa, Chainsaw, evtx_dump, YARA, capa, FLOSS, rizin, dll)
       6. Skrip DidierStevensSuite (oledump, zipdump, pdfid, pdf-parser, base64dump)
-      7. Menyalin executable ke bin/ + membuat shim
+      7. Menyalin executable ke bin/ + membuat shim .cmd
       8. Verifikasi lewat katalog tool
+
+    Untuk Linux dan macOS gunakan ./setup_tools.sh - script ini memakai winget dan
+    shim .cmd yang khusus Windows.
 
     Setiap unduhan dicatat SHA256-nya di bin/_downloads.log agar dapat diaudit.
     Kegagalan satu tool tidak menghentikan tool lain; ringkasan ditampilkan di akhir.
@@ -45,6 +48,40 @@ $downloadLog = Join-Path $binDir '_downloads.log'
 $failures = New-Object System.Collections.ArrayList
 $warnings = New-Object System.Collections.ArrayList
 $manualNotes = New-Object System.Collections.ArrayList
+
+# Modul platform dipakai untuk deteksi OS dan direktori sementara. Diimpor lebih awal
+# supaya installer bisa menolak berjalan di OS yang salah sebelum mengubah apa pun.
+$platformLoaded = $false
+try {
+    Import-Module (Join-Path $root 'OpenForensic.Platform.psm1') -Force -DisableNameChecking -ErrorAction Stop
+    $platformLoaded = $true
+} catch {
+    Write-Verbose "Modul platform tidak dapat dimuat: $($_.Exception.Message)"
+}
+
+function Test-OFSetupWindows {
+    if ($platformLoaded -and (Get-Command Test-OFWindows -ErrorAction SilentlyContinue)) {
+        return [bool](Test-OFWindows)
+    }
+    $variable = Get-Variable -Name 'IsWindows' -ErrorAction SilentlyContinue
+    if ($variable) { return [bool]$variable.Value }
+    # PowerShell 5.1 hanya berjalan di Windows.
+    return $true
+}
+
+function Get-OFSetupTempRoot {
+    if ($platformLoaded -and (Get-Command Get-OFTempDirectory -ErrorAction SilentlyContinue)) {
+        return [string](Get-OFTempDirectory)
+    }
+    return [string][IO.Path]::GetTempPath()
+}
+
+if (-not (Test-OFSetupWindows)) {
+    Write-Host '[-] setup_tools.ps1 hanya untuk Windows (memakai winget dan shim .cmd).' -ForegroundColor Red
+    Write-Host '    Di Linux atau macOS jalankan: ./setup_tools.sh' -ForegroundColor Yellow
+    Write-Host '    Lihat juga docs/CROSS-PLATFORM.md dan docs/INSTALL.md.' -ForegroundColor DarkGray
+    exit 2
+}
 
 # TLS 1.2 wajib untuk api.github.com pada PowerShell 5.1
 try {
@@ -199,6 +236,10 @@ function New-OFShim {
 Write-Host '==========================================' -ForegroundColor Cyan
 Write-Host '   OpenForensic - Instalasi Dependensi    ' -ForegroundColor Cyan
 Write-Host '==========================================' -ForegroundColor Cyan
+if ($platformLoaded -and (Get-Command Get-OFPlatform -ErrorAction SilentlyContinue)) {
+    $platform = Get-OFPlatform
+    Write-Host "   Lingkungan: $($platform.Os) $($platform.Architecture) | PowerShell $($platform.PSVersion) $($platform.PSEdition)" -ForegroundColor DarkGray
+}
 
 # 1. Prasyarat
 Write-Step 'Memeriksa prasyarat'
@@ -344,8 +385,11 @@ $downloads = @(
 
 if (-not $SkipDownload) {
     Write-Step 'Mengunduh tool rilis (GitHub / vendor)'
-    $tempDir = Join-Path $env:TEMP ('of_setup_' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+    # Direktori sementara mengikuti lapisan platform (Get-OFTempDirectory), bukan
+    # variabel environment khusus Windows.
+    $tempDir = Join-Path (Get-OFSetupTempRoot) ('of_setup_' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    Write-Host "    Staging: $tempDir" -ForegroundColor DarkGray
     try {
         foreach ($item in $downloads) {
             if (-not (Test-OFSelected -Id $item.Id)) { continue }
@@ -393,7 +437,7 @@ if (-not $SkipDownload) {
                             New-OFShim -Name $alias -RelativeTarget $item.TargetName | Out-Null
                         }
                     }
-                    Write-Ok "$($item.Name) siap: bin\\$($item.TargetName)"
+                    Write-Ok "$($item.Name) siap: bin/$($item.TargetName)"
                     continue
                 }
 
@@ -413,10 +457,11 @@ if (-not $SkipDownload) {
 
                 $exe = @(Get-ChildItem -LiteralPath $targetDir -Filter $item.Exe -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1)
                 if ($exe.Count -eq 0) {
-                    Write-Warn "$($item.Name): executable '$($item.Exe)' tidak ditemukan setelah ekstraksi. Periksa bin\\$($item.Id)."
+                    Write-Warn "$($item.Name): executable '$($item.Exe)' tidak ditemukan setelah ekstraksi. Periksa bin/$($item.Id)."
                     continue
                 }
-                $relative = $exe[0].FullName.Substring($binDir.Length).TrimStart('\\')
+                $separator = [string][IO.Path]::DirectorySeparatorChar
+                $relative = $exe[0].FullName.Substring($binDir.Length).TrimStart($separator, '/')
                 $usePushd = ($item.ContainsKey('Pushd') -and $item.Pushd)
                 $shimNames = New-Object System.Collections.ArrayList
                 [void]$shimNames.Add($item.Id)
@@ -430,7 +475,7 @@ if (-not $SkipDownload) {
                         New-OFShim -Name $shimName -RelativeTarget $relative | Out-Null
                     }
                 }
-                Write-Ok "$($item.Name) siap: bin\\$relative (shim: $($uniqueShims -join ', '))"
+                Write-Ok "$($item.Name) siap: bin/$relative (shim: $($uniqueShims -join ', '))"
             } catch {
                 Write-Warn "$($item.Name) gagal dipasang: $($_.Exception.Message)"
             }
@@ -469,7 +514,7 @@ if (-not $SkipDownload -and $pythonCmd) {
                 continue
             }
         }
-        $relative = "didierstevens\\$($item.Script)"
+        $relative = Join-Path 'didierstevens' $item.Script
         $shimNames = @($item.Id, [IO.Path]::GetFileNameWithoutExtension($item.Script)) | Select-Object -Unique
         foreach ($shimName in $shimNames) {
             New-OFShim -Name $shimName -RelativeTarget $relative -Interpreter $pythonCmd | Out-Null
@@ -578,6 +623,7 @@ Write-Host "  Lokasi tool     : $binDir" -ForegroundColor Cyan
 Write-Host "  Log unduhan     : $downloadLog" -ForegroundColor Cyan
 Write-Host '  Jalankan alur   : .\case.ps1 -Path <bukti> -CaseName "<nama kasus>"' -ForegroundColor Cyan
 Write-Host '  Menu interaktif : .\openforensic.bat' -ForegroundColor Cyan
+Write-Host '  Diagnostik      : .\doctor.ps1' -ForegroundColor Cyan
 Write-Host '==========================================' -ForegroundColor Cyan
 
 if ($failures.Count -gt 0) { exit 1 }
