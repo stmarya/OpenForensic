@@ -1,21 +1,35 @@
 @{
     RootModule           = 'OpenForensic.psm1'
     NestedModules        = @(
+        'OpenForensic.Platform.psm1',
         'OpenForensic.Workflow.psm1',
         'OpenForensic.Ai.psm1',
         'OpenForensic.Integrity.psm1',
         'OpenForensic.Timeline.psm1',
         'OpenForensic.Models.psm1'
     )
-    ModuleVersion        = '0.4.0'
+    ModuleVersion        = '0.5.0'
     GUID                 = 'b3f1c2d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f'
     Author               = 'stmarya'
     CompanyName          = 'OpenForensic'
     Copyright            = '(c) 2026 stmarya. MIT License.'
-    Description          = 'OpenForensic: toolkit forensik digital berbasis PowerShell dengan alur kerja end-to-end berbasis kasus (bukti -> tool -> artefak -> timeline -> temuan -> report), integritas bukti (manifest + segel kriptografis), pemetaan MITRE ATT&CK, ekspor IOC (CSV/JSON/STIX/MISP), eksekusi tool yang aman tanpa shell evaluation, serta lapisan AI multi-provider dengan registry model milik pengguna sendiri.'
+    Description          = 'OpenForensic: toolkit forensik digital lintas platform (Windows, Linux, macOS) berbasis PowerShell 7 dengan alur kerja end-to-end berbasis kasus (bukti -> tool -> artefak -> timeline -> temuan -> report), integritas bukti (manifest + segel kriptografis), pemetaan MITRE ATT&CK, ekspor IOC (CSV/JSON/STIX/MISP), eksekusi tool yang aman tanpa shell evaluation, serta lapisan AI multi-provider dengan registry model milik pengguna sendiri.'
     PowerShellVersion    = '5.1'
     CompatiblePSEditions = @('Desktop', 'Core')
     FunctionsToExport    = @(
+        'Get-OFPlatform',
+        'Test-OFWindows',
+        'Test-OFInteractive',
+        'Test-OFAdministrator',
+        'Get-OFDataRoot',
+        'Get-OFTempDirectory',
+        'Convert-OFPath',
+        'Resolve-OFCommand',
+        'Get-OFPackageManager',
+        'Get-OFInstallHint',
+        'Get-OFSecureStorageMode',
+        'Test-OFPlatformCompatibility',
+        'Format-OFPlatformSummary',
         'Get-OFPath',
         'Initialize-OFWorkspace',
         'Get-OFToolCatalog',
@@ -111,7 +125,7 @@
     AliasesToExport      = @()
     PrivateData          = @{
         PSData = @{
-            Tags         = @('forensics', 'ctf', 'dfir', 'security', 'volatility', 'ai', 'incident-response', 'mitre-attack', 'timeline', 'ioc')
+            Tags         = @('forensics', 'ctf', 'dfir', 'security', 'volatility', 'ai', 'incident-response', 'mitre-attack', 'timeline', 'ioc', 'cross-platform')
             LicenseUri   = 'https://github.com/stmarya/OpenForensic/blob/main/LICENSE'
             ProjectUri   = 'https://github.com/stmarya/OpenForensic'
             ReleaseNotes = 'Lihat CHANGELOG.md'

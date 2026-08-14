@@ -83,61 +83,6 @@ function Test-OFMacPlatform {
     return $false
 }
 
-function Get-OFPlatform {
-    <#
-        .SYNOPSIS
-        Mengembalikan detail platform tempat OpenForensic berjalan.
-
-        .EXAMPLE
-        Get-OFPlatform | Format-List
-    #>
-    [CmdletBinding()]
-    param()
-
-    $isWindows = Test-OFWindows
-    $isLinux = Test-OFLinuxPlatform
-    $isMac = Test-OFMacPlatform
-
-    $osName = if ($isWindows) { 'Windows' } elseif ($isLinux) { 'Linux' } elseif ($isMac) { 'macOS' } else { 'Unknown' }
-
-    $architecture = 'unknown'
-    try {
-        $architecture = [string][System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-    } catch {
-        Write-Verbose "Arsitektur tidak dapat dideteksi: $($_.Exception.Message)"
-    }
-
-    $description = ''
-    try {
-        $description = [string][System.Runtime.InteropServices.RuntimeInformation]::OSDescription
-    } catch {
-        $description = [string][System.Environment]::OSVersion.VersionString
-    }
-
-    $inContainer = $false
-    if ($env:OPENFORENSIC_IN_CONTAINER) { $inContainer = $true }
-    elseif (-not $isWindows -and (Test-Path -LiteralPath '/.dockerenv')) { $inContainer = $true }
-
-    [pscustomobject]@{
-        Os              = $osName
-        OsDescription   = $description
-        Architecture    = $architecture
-        IsWindows       = $isWindows
-        IsLinux         = $isLinux
-        IsMacOS         = $isMac
-        IsUnix          = (-not $isWindows)
-        PSEdition       = $PSVersionTable.PSEdition
-        PSVersion       = [string]$PSVersionTable.PSVersion
-        IsCore          = ($PSVersionTable.PSEdition -eq 'Core')
-        PathSeparator   = [string][System.IO.Path]::DirectorySeparatorChar
-        IsContainer     = $inContainer
-        IsInteractive   = (Test-OFInteractive)
-        DataRoot        = (Get-OFDataRoot)
-        SecureStorage   = (Get-OFSecureStorageMode)
-        DetectedAt      = (Get-Date).ToString('o')
-    }
-}
-
 function Test-OFInteractive {
     <#
         .SYNOPSIS
@@ -155,34 +100,6 @@ function Test-OFInteractive {
         Write-Verbose 'UserInteractive tidak tersedia pada runtime ini.'
     }
     return $true
-}
-
-function Test-OFAdministrator {
-    <#
-        .SYNOPSIS
-        True bila proses berjalan dengan hak administrator (Windows) atau root (Unix).
-    #>
-    [CmdletBinding()]
-    [OutputType([bool])]
-    param()
-
-    if (Test-OFWindows) {
-        try {
-            $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-            $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
-            return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
-        } catch {
-            return $false
-        }
-    }
-
-    try {
-        $id = & id -u 2>$null
-        if ($LASTEXITCODE -eq 0 -and $id) { return ([int]$id -eq 0) }
-    } catch {
-        Write-Verbose 'Perintah id tidak tersedia.'
-    }
-    return $false
 }
 
 function Get-OFDataRoot {
@@ -223,6 +140,114 @@ function Get-OFDataRoot {
     return [string]$root
 }
 
+function Get-OFSecureStorageMode {
+    <#
+        .SYNOPSIS
+        Mode penyimpanan rahasia dan penyegelan yang tersedia pada platform ini.
+
+        .DESCRIPTION
+        dpapi   : Windows, terikat akun dan mesin (DPAPI).
+        pbkdf2  : lintas platform, memakai passphrase dan PBKDF2-HMAC-SHA256.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+
+    if (-not (Test-OFWindows)) { return 'pbkdf2' }
+    try {
+        Add-Type -AssemblyName System.Security -ErrorAction Stop
+        return 'dpapi'
+    } catch {
+        return 'pbkdf2'
+    }
+}
+
+function Get-OFPlatform {
+    <#
+        .SYNOPSIS
+        Mengembalikan detail platform tempat OpenForensic berjalan.
+
+        .EXAMPLE
+        Get-OFPlatform | Format-List
+    #>
+    [CmdletBinding()]
+    param()
+
+    $windows = Test-OFWindows
+    $linux = Test-OFLinuxPlatform
+    $mac = Test-OFMacPlatform
+
+    $osName = if ($windows) { 'Windows' } elseif ($linux) { 'Linux' } elseif ($mac) { 'macOS' } else { 'Unknown' }
+
+    $architecture = 'unknown'
+    try {
+        $architecture = [string][System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+    } catch {
+        Write-Verbose "Arsitektur tidak dapat dideteksi: $($_.Exception.Message)"
+    }
+
+    $description = ''
+    try {
+        $description = [string][System.Runtime.InteropServices.RuntimeInformation]::OSDescription
+    } catch {
+        $description = [string][System.Environment]::OSVersion.VersionString
+    }
+
+    $inContainer = $false
+    if ($env:OPENFORENSIC_IN_CONTAINER) {
+        $inContainer = $true
+    } elseif (-not $windows -and (Test-Path -LiteralPath '/.dockerenv')) {
+        $inContainer = $true
+    }
+
+    [pscustomobject]@{
+        Os            = $osName
+        OsDescription = $description
+        Architecture  = $architecture
+        IsWindows     = $windows
+        IsLinux       = $linux
+        IsMacOS       = $mac
+        IsUnix        = (-not $windows)
+        PSEdition     = $PSVersionTable.PSEdition
+        PSVersion     = [string]$PSVersionTable.PSVersion
+        IsCore        = ($PSVersionTable.PSEdition -eq 'Core')
+        PathSeparator = [string][System.IO.Path]::DirectorySeparatorChar
+        IsContainer   = $inContainer
+        IsInteractive = (Test-OFInteractive)
+        DataRoot      = (Get-OFDataRoot)
+        SecureStorage = (Get-OFSecureStorageMode)
+        DetectedAt    = (Get-Date).ToString('o')
+    }
+}
+
+function Test-OFAdministrator {
+    <#
+        .SYNOPSIS
+        True bila proses berjalan dengan hak administrator (Windows) atau root (Unix).
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param()
+
+    if (Test-OFWindows) {
+        try {
+            $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+            $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+            return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+        } catch {
+            return $false
+        }
+    }
+
+    try {
+        $userId = & id -u 2>$null
+        if ($LASTEXITCODE -eq 0 -and $userId) { return ([int]$userId -eq 0) }
+    } catch {
+        Write-Verbose 'Perintah id tidak tersedia.'
+    }
+    return $false
+}
+
 function Get-OFTempDirectory {
     <#
         .SYNOPSIS
@@ -254,14 +279,15 @@ function Convert-OFPath {
     process {
         if ([string]::IsNullOrEmpty($Path)) { return $Path }
         $separator = [string][System.IO.Path]::DirectorySeparatorChar
-        return ($Path -replace '[\\/]', [System.Text.RegularExpressions.Regex]::Escape($separator)).Replace('\\', $separator)
+        $replacement = [System.Text.RegularExpressions.Regex]::Escape($separator)
+        return ($Path -replace '[\\/]+', $replacement)
     }
 }
 
 function Resolve-OFCommand {
     <#
         .SYNOPSIS
-        Mencari executable lintas platform: PATH, direktori bin lokal, dan sufiks Windows.
+        Mencari executable lintas platform: direktori lokal, PATH, dan sufiks Windows.
 
         .PARAMETER Name
         Nama perintah tanpa ekstensi, mis. exiftool.
@@ -282,7 +308,12 @@ function Resolve-OFCommand {
         foreach ($suffix in $suffixes) {
             $candidate = Join-Path $directory ($Name + $suffix)
             if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-                return [pscustomobject]@{ Name = $Name; Path = (Resolve-Path -LiteralPath $candidate).Path; Source = 'local'; Found = $true }
+                return [pscustomobject]@{
+                    Name   = $Name
+                    Path   = (Resolve-Path -LiteralPath $candidate).Path
+                    Source = 'local'
+                    Found  = $true
+                }
             }
         }
     }
@@ -343,7 +374,10 @@ function Get-OFInstallHint {
         [string]$FallbackHint = ''
     )
 
-    if (-not $script:PlatPackageNames.ContainsKey($ToolId)) { return $FallbackHint }
+    if (-not $script:PlatPackageNames.ContainsKey($ToolId)) {
+        if ($FallbackHint) { return $FallbackHint }
+        return "Pasang '$ToolId' secara manual lalu pastikan tersedia di PATH."
+    }
     $map = $script:PlatPackageNames[$ToolId]
 
     $order = if (Test-OFWindows) {
@@ -378,28 +412,6 @@ function Get-OFInstallHint {
     return "Pasang '$ToolId' secara manual lalu pastikan tersedia di PATH."
 }
 
-function Get-OFSecureStorageMode {
-    <#
-        .SYNOPSIS
-        Mode penyimpanan rahasia dan penyegelan yang tersedia pada platform ini.
-
-        .DESCRIPTION
-        dpapi   : Windows, terikat akun dan mesin (DPAPI).
-        pbkdf2  : lintas platform, memakai passphrase dan PBKDF2-HMAC-SHA256.
-    #>
-    [CmdletBinding()]
-    [OutputType([string])]
-    param()
-
-    if (-not (Test-OFWindows)) { return 'pbkdf2' }
-    try {
-        Add-Type -AssemblyName System.Security -ErrorAction Stop
-        return 'dpapi'
-    } catch {
-        return 'pbkdf2'
-    }
-}
-
 function Test-OFPlatformCompatibility {
     <#
         .SYNOPSIS
@@ -414,20 +426,19 @@ function Test-OFPlatformCompatibility {
     $platform = Get-OFPlatform
     $features = New-Object System.Collections.ArrayList
 
-    function Add-Feature {
+    $add = {
         param([string]$Feature, [bool]$Supported, [string]$Notes)
         [void]$features.Add([pscustomobject]@{ Feature = $Feature; Supported = $Supported; Notes = $Notes })
     }
 
-    Add-Feature -Feature 'Alur kerja kasus (bukti, tool, artefak, temuan)' -Supported $true -Notes 'Berjalan di semua platform.'
-    Add-Feature -Feature 'Hash bukti dan manifest SHA256' -Supported $true -Notes 'Memakai API .NET lintas platform.'
-    Add-Feature -Feature 'Timeline ternormalisasi, MITRE, ekspor IOC' -Supported $true -Notes 'Berjalan di semua platform.'
-    Add-Feature -Feature 'Report Markdown dan HTML' -Supported $true -Notes 'Berjalan di semua platform.'
-    Add-Feature -Feature 'Lapisan AI dan registry model pengguna' -Supported $true -Notes 'HTTP lintas platform; model lokal via Ollama/LM Studio/vLLM.'
-
-    Add-Feature -Feature 'Segel kasus mode passphrase (PBKDF2)' -Supported $true -Notes 'Direkomendasikan untuk lingkungan campuran dan penyerahan bukti.'
-    Add-Feature -Feature 'Segel kasus mode DPAPI' -Supported ($platform.SecureStorage -eq 'dpapi') -Notes 'Hanya Windows. Di Linux/macOS gunakan -Passphrase.'
-    Add-Feature -Feature 'Penyimpanan API key terenkripsi DPAPI' -Supported ($platform.SecureStorage -eq 'dpapi') -Notes 'Di Linux/macOS gunakan variabel environment API key.'
+    & $add 'Alur kerja kasus (bukti, tool, artefak, temuan)' $true 'Berjalan di semua platform.'
+    & $add 'Hash bukti dan manifest SHA256' $true 'Memakai API .NET lintas platform.'
+    & $add 'Timeline ternormalisasi, MITRE, ekspor IOC' $true 'Berjalan di semua platform.'
+    & $add 'Report Markdown dan HTML' $true 'Berjalan di semua platform.'
+    & $add 'Lapisan AI dan registry model pengguna' $true 'HTTP lintas platform; model lokal via Ollama, LM Studio, atau vLLM.'
+    & $add 'Segel kasus mode passphrase (PBKDF2)' $true 'Direkomendasikan untuk lingkungan campuran dan penyerahan bukti.'
+    & $add 'Segel kasus mode DPAPI' ($platform.SecureStorage -eq 'dpapi') 'Hanya Windows. Di Linux dan macOS gunakan -SealPassphrase.'
+    & $add 'Penyimpanan API key terenkripsi DPAPI' ($platform.SecureStorage -eq 'dpapi') 'Di Linux dan macOS gunakan variabel environment API key.'
 
     $dialog = $false
     if ($platform.IsWindows -and $platform.IsInteractive) {
@@ -438,18 +449,17 @@ function Test-OFPlatformCompatibility {
             $dialog = $false
         }
     }
-    Add-Feature -Feature 'Pemilih berkas grafis (dialog)' -Supported $dialog -Notes 'Di luar Windows, path bukti diminta lewat teks atau argumen CLI.'
+    & $add 'Pemilih berkas grafis (dialog)' $dialog 'Di luar Windows, path bukti diminta lewat teks atau argumen CLI.'
 
     $managers = @(Get-OFPackageManager)
-    Add-Feature -Feature 'Installer otomatis tool pihak ketiga' -Supported ($managers.Count -gt 0) `
-        -Notes ('Package manager terdeteksi: ' + (if ($managers.Count -gt 0) { $managers -join ', ' } else { 'tidak ada' }) + '. Windows: setup_tools.ps1, Linux/macOS: setup_tools.sh.')
+    $managerText = if ($managers.Count -gt 0) { $managers -join ', ' } else { 'tidak ada' }
+    & $add 'Installer otomatis tool pihak ketiga' ($managers.Count -gt 0) "Package manager terdeteksi: $managerText. Windows: setup_tools.ps1, Linux dan macOS: setup_tools.sh."
 
-    Add-Feature -Feature 'Tool Windows-only (MFTECmd, RegRipper, Get-ZimmermanTools)' -Supported $platform.IsWindows `
-        -Notes 'Di Linux/macOS pakai analyzeMFT, RegRipper via Perl, atau proses artefak yang sudah diekspor.'
-    Add-Feature -Feature 'Volatility 3, YARA, capa, FLOSS, oletools, binwalk' -Supported $true -Notes 'Semua tersedia lintas platform via pip atau package manager.'
-    Add-Feature -Feature 'Hayabusa, Chainsaw, Stegseek, rizin, jadx' -Supported $true -Notes 'Tersedia rilis Linux dan macOS di halaman rilis masing-masing.'
-    Add-Feature -Feature 'Write-block lunak pada berkas bukti' -Supported $true -Notes 'Windows: atribut read-only. Unix: bit tulis dicabut.'
-    Add-Feature -Feature 'Eksekusi proses dengan timeout' -Supported $true -Notes 'Memakai System.Diagnostics.Process, lintas platform.'
+    & $add 'Tool khusus Windows (MFTECmd, RegRipper, Get-ZimmermanTools)' $platform.IsWindows 'Di Linux dan macOS pakai analyzeMFT atau RegRipper via Perl, atau proses artefak yang sudah diekspor.'
+    & $add 'Volatility 3, YARA, capa, FLOSS, oletools, binwalk' $true 'Tersedia lintas platform via pip atau package manager.'
+    & $add 'Hayabusa, Chainsaw, Stegseek, rizin, jadx' $true 'Tersedia rilis Linux dan macOS pada halaman rilis masing-masing.'
+    & $add 'Write-block lunak pada berkas bukti' $true 'Windows memakai atribut read-only, Unix mencabut bit tulis.'
+    & $add 'Eksekusi proses dengan timeout' $true 'Memakai System.Diagnostics.Process, lintas platform.'
 
     return , @($features)
 }
