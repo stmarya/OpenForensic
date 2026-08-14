@@ -4,6 +4,54 @@ Semua perubahan penting pada proyek ini dicatat di file ini.
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id/1.1.0/)
 dan proyek ini memakai [Semantic Versioning](https://semver.org/lang/id/).
 
+## [0.5.0] - 2026-08-15
+
+Rilis kompatibilitas lintas platform: OpenForensic kini resmi berjalan di Windows, Linux,
+macOS, dan di dalam kontainer.
+
+### Ditambahkan
+
+- **`OpenForensic.Platform.psm1`** (13 fungsi) sebagai lapisan kompatibilitas:
+  - `Get-OFPlatform`, `Test-OFWindows`, `Test-OFInteractive`, `Test-OFAdministrator`
+  - `Get-OFDataRoot` (menghormati `OPENFORENSIC_HOME`, `%LOCALAPPDATA%`,
+    `~/Library/Application Support`, dan `XDG_DATA_HOME`), `Get-OFTempDirectory`, `Convert-OFPath`
+  - `Resolve-OFCommand` (resolusi executable lintas OS termasuk sufiks Windows)
+  - `Get-OFPackageManager` dan `Get-OFInstallHint` (saran pemasangan per OS: winget, apt,
+    dnf, pacman, zypper, apk, brew, pip, gem)
+  - `Get-OFSecureStorageMode`, `Test-OFPlatformCompatibility`, `Format-OFPlatformSummary`
+- **`setup_tools.sh`**: installer POSIX untuk Linux dan macOS (deteksi package manager,
+  pemasangan PowerShell 7, paket pip forensik, unduhan rilis Hayabusa/Chainsaw/Stegseek,
+  rule YARA, pencatatan SHA256 di `bin/_downloads.log`, tanpa `curl | bash`).
+- **`openforensic.sh`**: launcher POSIX dengan mode `menu`, `case`, `run`, dan `doctor`.
+- **`Dockerfile`, `docker-compose.yml`, `.dockerignore`**: image siap pakai berbasis
+  `mcr.microsoft.com/powershell` dengan Volatility 3, oletools, capa, FLOSS, YARA, ExifTool,
+  tshark, ClamAV, SQLite, steghide, john, pngcheck, testdisk, dan Pester. Bukti di-mount
+  read-only, hasil kasus tetap di host, plus profil opsional `ai-local` untuk Ollama.
+- **Workflow CI `cross-platform`**: matriks Windows PowerShell 5.1, PowerShell 7 di Windows,
+  Ubuntu, dan macOS; ditambah job `shellcheck` untuk script POSIX dan job build image Docker.
+- **Fixtures bukti sintetis** di `tests/fixtures/` (strings ber-IOC, contoh prompt injection,
+  CSV Hayabusa, CSV MFTECmd, contoh allowlist hash) untuk regression test yang stabil.
+- **`tests/OpenForensic.Platform.Tests.ps1`**: test deteksi platform, direktori data, normalisasi
+  path, resolusi perintah, saran pemasangan, mode penyimpanan rahasia, matriks kemampuan, serta
+  guard portabilitas (tanpa path Windows hardcoded, tanpa `Invoke-Expression`, launcher lengkap).
+- **`docs/CROSS-PLATFORM.md`**: tiga cara pemakaian, tabel perbedaan kemampuan per OS,
+  penyesuaian praktis di luar Windows, daftar variabel environment, dan aturan kompatibilitas
+  untuk kontributor.
+
+### Diubah
+
+- Manifest `OpenForensic.psd1` versi 0.5.0: enam nested module dan 103 fungsi terekspor,
+  deskripsi dan tag diperbarui menjadi lintas platform.
+- README ditulis ulang dengan jalur pemasangan Windows, Linux/macOS, dan Docker.
+
+### Catatan platform
+
+- Segel DPAPI dan penyimpanan API key DPAPI hanya tersedia di Windows. Di Linux dan macOS
+  gunakan segel mode passphrase (PBKDF2) dan variabel environment untuk API key.
+- Dialog pemilih berkas grafis hanya ada di Windows; di luar Windows gunakan argumen CLI.
+- Tool khusus Windows (MFTECmd, RegRipper, EZ Tools) tetap Windows-only; alternatif lintas
+  platform dan jalur impor CSV dijelaskan di `docs/CROSS-PLATFORM.md`.
+
 ## [0.4.0] - 2026-08-15
 
 ### Ditambahkan
@@ -53,6 +101,8 @@ dan proyek ini memakai [Semantic Versioning](https://semver.org/lang/id/).
   `-ExportIoc`, `-Seal`, `-SealPassphrase`, `-VerifyIntegrity`, `-DeepAi`, `-Model`,
   `-ListModels`, dan `-TestModels`. Penambahan bukti kini melewati duplikat secara otomatis.
   `-VerifyIntegrity` mengembalikan exit code 3 bila integritas bermasalah.
+- `menu.ps1` diperluas menjadi 23 pilihan: alur lengkap satu langkah, timeline dan MITRE,
+  ekspor IOC, integritas kasus, AI analisa mendalam, dan manajer model AI.
 - Manifest `OpenForensic.psd1` versi 0.4.0: lima nested module dan 90 fungsi terekspor.
 - `.gitignore` menutup `.ai_models.json` serta ekspor timeline/IOC yang tercecer di root.
 
