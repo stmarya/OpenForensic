@@ -56,48 +56,72 @@ jobs:
           if ($hits) { $hits | Format-List; throw 'Invoke-Expression terdeteksi - dilarang oleh kebijakan keamanan.' }
           Write-Host 'Bersih: tidak ada Invoke-Expression.'
 
-      # Modul inti, workflow, dan lapisan platform sudah bebas pola khusus Windows.
-      # menu.ps1, case.ps1, dan setup_tools.ps1 masih dalam proses migrasi, jadi
-      # langkah ini melaporkan pelanggaran sebagai peringatan dan belum memblokir.
-      - name: Guard - portabilitas lintas platform (warning)
+      # Berkas yang sudah dimigrasi ke lapisan OpenForensic.Platform.psm1 wajib tetap
+      # bersih. Pelanggaran di sini memblokir CI agar tidak ada regresi portabilitas.
+      - name: Guard - berkas termigrasi wajib bebas pola khusus Windows (blocking)
+        shell: powershell
+        run: |
+          $migrated = @(
+            'OpenForensic.psm1',
+            'OpenForensic.Workflow.psm1',
+            'OpenForensic.Integrity.psm1',
+            'OpenForensic.Timeline.psm1',
+            'OpenForensic.Models.psm1',
+            'menu.ps1',
+            'case.ps1',
+            'setup_tools.ps1',
+            'doctor.ps1'
+          )
+          $pattern = '\$env:(TEMP|TMP|ComSpec|USERNAME|COMPUTERNAME)\b|\$Is(Windows|Linux|MacOS)\b|[A-Za-z]:\\(Users|Windows|Program Files)'
+          $violations = @()
+          $checked = @()
+          foreach ($file in $migrated) {
+            if (-not (Test-Path -LiteralPath $file)) { continue }
+            $checked += $file
+            $violations += @(Select-String -Path $file -Pattern $pattern)
+          }
+          Write-Host "Diperiksa: $($checked -join ', ')"
+          if ($violations.Count -gt 0) {
+            $violations | Format-Table -AutoSize Path, LineNumber, Line
+            throw "Berkas termigrasi harus memakai lapisan platform (Test-OFWindows, Get-OFTempDirectory, Get-OFActorName). Ditemukan $($violations.Count) pelanggaran."
+          }
+          Write-Host 'Bersih: seluruh berkas termigrasi memakai lapisan platform.'
+
+      # Sisa berkas (mis. run.ps1, OpenForensic.Ai.psm1) belum diaudit satu per satu.
+      # Dilaporkan sebagai peringatan supaya migrasi berikutnya terlihat, tanpa memblokir.
+      - name: Guard - portabilitas berkas sisa (warning)
         shell: powershell
         continue-on-error: true
         run: |
+          $migrated = @(
+            'OpenForensic.psm1',
+            'OpenForensic.Workflow.psm1',
+            'OpenForensic.Integrity.psm1',
+            'OpenForensic.Timeline.psm1',
+            'OpenForensic.Models.psm1',
+            'OpenForensic.Platform.psm1',
+            'menu.ps1',
+            'case.ps1',
+            'setup_tools.ps1',
+            'doctor.ps1'
+          )
           $sources = Get-ChildItem -Path . -Include '*.ps1', '*.psm1' -File -Recurse |
-            Where-Object { $_.FullName -notmatch '\\(tests|bin|volatility3)\\' }
+            Where-Object { $_.FullName -notmatch '\\(tests|bin|volatility3)\\' } |
+            Where-Object { $migrated -notcontains $_.Name }
+          if (-not $sources) {
+            Write-Host 'Tidak ada berkas sisa untuk diperiksa.'
+            exit 0
+          }
           $violations = @()
-
-          # $IsWindows/$IsLinux/$IsMacOS tidak ada di PowerShell 5.1; pakai Test-OFWindows.
-          $violations += @($sources | Select-String -Pattern '\$Is(Windows|Linux|MacOS)\b' |
-            Where-Object { $_.Path -notmatch 'OpenForensic\.Platform\.psm1$' })
-
-          # %TEMP% dan %ComSpec% hanya ada di Windows; pakai Get-OFTempDirectory.
+          $violations += @($sources | Select-String -Pattern '\$Is(Windows|Linux|MacOS)\b')
           $violations += @($sources | Select-String -Pattern '\$env:(TEMP|TMP|ComSpec)\b')
-
-          # Path absolut Windows yang di-hardcode.
           $violations += @($sources | Select-String -Pattern '[A-Za-z]:\\(Users|Windows|Program Files)')
-
           if ($violations.Count -gt 0) {
             $violations | Format-Table -AutoSize Path, LineNumber, Line
-            Write-Host "::warning::Ditemukan $($violations.Count) pola khusus Windows. Gunakan lapisan OpenForensic.Platform.psm1."
+            Write-Host "::warning::Ditemukan $($violations.Count) pola khusus Windows pada berkas yang belum dimigrasi. Gunakan lapisan OpenForensic.Platform.psm1."
           } else {
-            Write-Host 'Bersih: tidak ada pola khusus Windows di luar lapisan platform.'
+            Write-Host 'Bersih: berkas sisa juga tidak memakai pola khusus Windows.'
           }
-
-      - name: Guard - modul inti wajib bebas pola khusus Windows (blocking)
-        shell: powershell
-        run: |
-          $core = @('OpenForensic.psm1', 'OpenForensic.Workflow.psm1', 'OpenForensic.Timeline.psm1', 'OpenForensic.Models.psm1')
-          $violations = @()
-          foreach ($file in $core) {
-            if (-not (Test-Path -LiteralPath $file)) { continue }
-            $violations += @(Select-String -Path $file -Pattern '\$env:(TEMP|TMP|ComSpec|USERNAME|COMPUTERNAME)\b|\$Is(Windows|Linux|MacOS)\b')
-          }
-          if ($violations.Count -gt 0) {
-            $violations | Format-Table -AutoSize Path, LineNumber, Line
-            throw "Modul inti harus memakai lapisan platform, ditemukan $($violations.Count) pelanggaran."
-          }
-          Write-Host 'Bersih: modul inti memakai lapisan platform.'
 
       - name: Guard - script POSIX harus LF (blocking)
         shell: powershell
@@ -110,3 +134,10 @@ jobs:
           }
           if ($bad.Count -gt 0) { throw "Berkas berikut memakai CRLF dan akan gagal di Linux/macOS: $($bad -join ', ')" }
           Write-Host 'Bersih: seluruh script POSIX memakai LF.'
+
+      - name: Guard - installer POSIX harus lolos sintaks bash
+        shell: bash
+        run: |
+          bash -n setup_tools.sh
+          bash -n openforensic.sh
+          echo 'Bersih: sintaks bash valid.'
