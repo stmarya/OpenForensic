@@ -1,0 +1,9 @@
+# Ignore downloaded binaries and tools
+bin/
+volatility3/
+
+# Ignore user generated reports
+reports/
+
+# Ignore secret API keys
+.ai_config
