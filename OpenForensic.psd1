@@ -1,12 +1,18 @@
 @{
     RootModule           = 'OpenForensic.psm1'
-    NestedModules        = @('OpenForensic.Workflow.psm1', 'OpenForensic.Ai.psm1')
-    ModuleVersion        = '0.3.0'
+    NestedModules        = @(
+        'OpenForensic.Workflow.psm1',
+        'OpenForensic.Ai.psm1',
+        'OpenForensic.Integrity.psm1',
+        'OpenForensic.Timeline.psm1',
+        'OpenForensic.Models.psm1'
+    )
+    ModuleVersion        = '0.4.0'
     GUID                 = 'b3f1c2d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f'
     Author               = 'stmarya'
     CompanyName          = 'OpenForensic'
     Copyright            = '(c) 2026 stmarya. MIT License.'
-    Description          = 'OpenForensic: toolkit forensik digital berbasis PowerShell dengan alur kerja end-to-end berbasis kasus (bukti -> tool -> artefak -> temuan -> report), eksekusi tool yang aman tanpa shell evaluation, dan lapisan AI assistance multi-provider.'
+    Description          = 'OpenForensic: toolkit forensik digital berbasis PowerShell dengan alur kerja end-to-end berbasis kasus (bukti -> tool -> artefak -> timeline -> temuan -> report), integritas bukti (manifest + segel kriptografis), pemetaan MITRE ATT&CK, ekspor IOC (CSV/JSON/STIX/MISP), eksekusi tool yang aman tanpa shell evaluation, serta lapisan AI multi-provider dengan registry model milik pengguna sendiri.'
     PowerShellVersion    = '5.1'
     CompatiblePSEditions = @('Desktop', 'Core')
     FunctionsToExport    = @(
@@ -59,14 +65,53 @@
         'Invoke-OFAiGuidedAnalysis',
         'Invoke-OFAiCaseAnalysis',
         'New-OFAiCaseReport',
-        'Start-OFAiAssistant'
+        'Start-OFAiAssistant',
+        'Invoke-OFProcessWithTimeout',
+        'Get-OFToolVersion',
+        'Update-OFCaseToolVersions',
+        'Protect-OFEvidenceFile',
+        'Test-OFEvidenceLock',
+        'Get-OFHashAllowlist',
+        'Test-OFHashAllowlist',
+        'Add-OFHashToAllowlist',
+        'Import-OFHashAllowlist',
+        'Test-OFEvidenceDuplicate',
+        'New-OFCaseManifest',
+        'Test-OFCaseManifest',
+        'New-OFCaseSeal',
+        'Test-OFCaseSeal',
+        'Get-OFIntegrityStatus',
+        'Format-OFIntegritySummary',
+        'Invoke-OFCaseSealWorkflow',
+        'New-OFTimelineEvent',
+        'Get-OFMitreTechnique',
+        'Update-OFCaseMitre',
+        'Get-OFMitreSummary',
+        'Import-OFTimelineCsv',
+        'Import-OFTimelineFromCase',
+        'Get-OFTimeline',
+        'Get-OFTimelineContext',
+        'Export-OFTimeline',
+        'Export-OFCaseIoc',
+        'Invoke-OFTimelineWorkflow',
+        'Get-OFAiModelPreset',
+        'Register-OFAiModel',
+        'Get-OFAiModelList',
+        'Remove-OFAiModel',
+        'Use-OFAiModel',
+        'Test-OFAiModel',
+        'Test-OFAiModelAll',
+        'Initialize-OFAiModelDefaults',
+        'Get-OFAiCaseContext',
+        'Invoke-OFAiDeepAnalysis',
+        'Invoke-OFCompleteWorkflow'
     )
     CmdletsToExport      = @()
     VariablesToExport    = @()
     AliasesToExport      = @()
     PrivateData          = @{
         PSData = @{
-            Tags         = @('forensics', 'ctf', 'dfir', 'security', 'volatility', 'ai', 'incident-response')
+            Tags         = @('forensics', 'ctf', 'dfir', 'security', 'volatility', 'ai', 'incident-response', 'mitre-attack', 'timeline', 'ioc')
             LicenseUri   = 'https://github.com/stmarya/OpenForensic/blob/main/LICENSE'
             ProjectUri   = 'https://github.com/stmarya/OpenForensic'
             ReleaseNotes = 'Lihat CHANGELOG.md'
