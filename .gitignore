@@ -1,17 +1,22 @@
-# Binary & tools yang diunduh
+# Binary & tool hasil unduhan
 bin/
 volatility3/
+*.exe
+*.dll
 
-# Virtual environment Python
-.venv/
-venv/
-__pycache__/
-*.pyc
-
-# Report & bukti hasil analisis (JANGAN pernah di-commit)
+# Report & artefak analisis (bisa memuat data bukti)
 reports/
+*.report.txt
+*.ai.md
+
+# Secret
+.ai_config
+.env
+*.key
+
+# Sampel bukti - jangan pernah di-commit
+samples/
 evidence/
-cases/
 *.dmp
 *.raw
 *.vmem
@@ -19,18 +24,10 @@ cases/
 *.pcap
 *.pcapng
 
-# Kredensial
-.ai_config
-.ai_config.secure
-.env
-
-# Log & artefak lokal
-*.log
+# PowerShell / editor
 TestResults*.xml
-
-# OS / editor
-Thumbs.db
-Desktop.ini
-.DS_Store
 .vscode/
 .idea/
+*.swp
+Thumbs.db
+desktop.ini

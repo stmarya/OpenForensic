@@ -1,38 +1,28 @@
-# Kebijakan Keamanan
+# Security Policy
 
 ## Melaporkan kerentanan
 
-Jangan membuka issue publik untuk kerentanan keamanan. Gunakan
-[GitHub Private Vulnerability Reporting](https://github.com/stmarya/OpenForensic/security/advisories/new)
-atau hubungi maintainer secara privat.
+Jangan buka issue publik untuk kerentanan. Gunakan fitur **GitHub Security Advisories**
+(Security -> Report a vulnerability) pada repo ini. Sertakan langkah reproduksi,
+versi PowerShell/Windows, dan dampaknya.
 
-Sertakan: versi toolkit, versi PowerShell & Python, langkah reproduksi, dan dampak.
-Target respons awal: 7 hari.
+## Model ancaman singkat
 
-## Model ancaman
+OpenForensic menjalankan tool pihak ketiga terhadap **file yang berpotensi jahat**.
+Asumsi keamanan yang dipakai:
 
-Toolkit ini memproses **file yang tidak dipercaya secara desain** (malware, dokumen
-ber-macro, memory dump, artefak CTF). Asumsi keamanan:
+1. **Nama & isi file target tidak dipercaya.** Semua argumen dilewatkan sebagai array
+   ke operator `&`; `Invoke-Expression` dilarang di seluruh basis kode (ditegakkan oleh PSScriptAnalyzer).
+2. **Isi report tidak dipercaya.** Report berisi output tool yang berasal dari file jahat.
+   Saat dikirim ke LLM, isinya dibungkus delimiter eksplisit dan model diinstruksikan untuk
+   tidak mengeksekusi instruksi di dalamnya (mitigasi prompt injection).
+3. **Secret tidak boleh masuk repo.** `.ai_config`, `bin/`, `reports/`, dan `volatility3/`
+   ada di `.gitignore`. API key disimpan terenkripsi DPAPI, bukan plaintext.
+4. **Data bukti tidak dikirim tanpa persetujuan.** Pengiriman ke API eksternal selalu
+   meminta konfirmasi interaktif (kecuali dipanggil eksplisit dengan `-Force`).
 
-| Ancaman | Mitigasi |
-|---|---|
-| Command injection via nama file bukti | Tidak ada `Invoke-Expression`. Semua eksekusi memakai call operator + array argumen; nama file tidak pernah di-*re-parse* shell. Semua path memakai `-LiteralPath`. |
-| Prompt injection dari isi bukti | Isi report dibungkus delimiter ber-nonce acak; system prompt melarang model mengikuti instruksi di dalam data. |
-| Kebocoran kredensial | API key hanya dari environment variable atau file DPAPI-encrypted; dikirim lewat HTTP header, bukan URL. `.ai_config*` di-gitignore. Migrasi otomatis dari plaintext lalu file lama dihapus. |
-| Kebocoran data bukti | Tidak ada trafik jaringan tanpa konfirmasi eksplisit. Provider LLM lokal (Ollama) didukung. `reports/`, `evidence/`, `cases/` di-gitignore. |
-| Modifikasi bukti | File bukti dibuka read-only; hash dihitung sebelum analisis dan dicatat ke chain-of-custody log yang bersifat append-only. |
+## Rekomendasi operasional
 
-## Di luar cakupan
-
-- Kerentanan pada tool pihak ketiga (Volatility 3, oletools, ExifTool, dsb.) —
-  laporkan ke upstream masing-masing.
-- Eksekusi kode yang berasal dari file bukti melalui parser tool pihak ketiga.
-  **Selalu jalankan analisis malware di dalam VM/sandbox yang terisolasi.**
-- Penyalahgunaan toolkit pada sistem tanpa izin.
-
-## Praktik yang direkomendasikan
-
-1. Jalankan di VM terisolasi tanpa akses ke jaringan produksi.
-2. Gunakan `OF_AI_PROVIDER=ollama` untuk data sensitif.
-3. Simpan salinan bukti asli read-only di luar folder kerja; verifikasi hash sebelum & sesudah.
-4. Jangan pernah menjalankan toolkit sebagai Administrator kecuali benar-benar diperlukan.
+- Jalankan analisis malware di VM terisolasi atau sandbox, bukan di host kerja.
+- Jangan jalankan sebagai Administrator kecuali benar-benar diperlukan.
+- Untuk perkara nyata, matikan fitur AI dan simpan `reports/` beserta hash pada media WORM.

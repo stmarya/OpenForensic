@@ -1,50 +1,41 @@
-# Kontribusi
-
-Terima kasih sudah tertarik membantu OpenForensic / Kan9Ch3k.
+# Contributing
 
 ## Setup
 
 ```powershell
 git clone https://github.com/stmarya/OpenForensic.git
 cd OpenForensic
-.\setup_tools.ps1 -IncludeOptional
-Install-Module Pester, PSScriptAnalyzer -Scope CurrentUser -Force
+Install-Module PSScriptAnalyzer, Pester -Scope CurrentUser -Force -SkipPublisherCheck
 ```
 
-## Sebelum membuat PR
+## Sebelum membuka PR
 
 ```powershell
-Invoke-ScriptAnalyzer -Path . -Recurse -Settings PSGallery   # harus bersih dari Error/Warning
-Invoke-Pester .\tests                                       # harus hijau
+Invoke-ScriptAnalyzer -Path . -Recurse -Settings .\PSScriptAnalyzerSettings.psd1
+Invoke-Pester -Path .\tests
 ```
+
+Keduanya harus bersih (tanpa severity Error). CI menjalankan hal yang sama di `windows-latest`.
 
 ## Aturan kode
 
-- Target **PowerShell 5.1** (jangan pakai `??`, ternary `? :`, atau `-AsHashtable`).
-- `Set-StrictMode -Version Latest` di setiap script/module.
-- **Dilarang** `Invoke-Expression`, `iex`, atau string interpolation untuk membangun command line.
-  Gunakan `& $exe @argArray`.
-- Selalu `-LiteralPath` untuk path file bukti (nama file bisa berisi `[ ]`, `` ` ``, `$`).
-- Cek `$LASTEXITCODE` setelah setiap native command.
-- Fungsi publik memakai prefix `OF` (mis. `Get-OFFileType`) dan `[CmdletBinding()]`.
-- Tambahkan comment-based help pada fungsi publik baru.
+- Setiap script diawali `#Requires -Version 5.1` dan `Set-StrictMode -Version Latest`.
+- **Dilarang** `Invoke-Expression`, string interpolation untuk membangun command line, atau
+  penyimpanan secret dalam plaintext.
+- Eksekusi proses eksternal selalu melalui `Invoke-OFTool` dengan `-Arguments` berupa array.
+- Input pengguna numerik divalidasi dengan `Read-OFChoice` (tanpa cast `[int]` langsung).
+- Gunakan verb-noun standar PowerShell dengan prefiks `OF` (contoh: `Get-OFFileType`).
 
-## Menambah tool
+## Menambah tool baru
 
-Cukup tambahkan entri di [`tools.json`](tools.json) — jangan hardcode di dalam module.
-Wajib menyertakan: `id`, `name`, `category`, `command`, `kinds`, `args`, `install`.
-Sertakan juga baris baru di tabel README dan test di `tests/`.
+Tambahkan entri di `tools.json`; tidak perlu menyentuh `menu.ps1`. Field wajib:
+`id`, `name`, `description`, `category`, `executable`, `source` (`bin`/`path`/`builtin`),
+`builtin`, `extensions`, `kinds`, `argTemplate`, `requiresPlugin`, `plugins`,
+`triage`, `triageArgs`, `dialogFilter`, `installHint`.
 
-## Menambah deteksi tipe file
-
-Tambahkan signature di `Get-OFFileType` (`OpenForensic.psm1`) beserta unit test
-yang membangun byte header sintetis. Jangan mengandalkan ekstensi.
+Placeholder yang tersedia di `argTemplate`/`triageArgs`: `{file}` dan `{plugin}`.
+Token yang menjadi kosong setelah substitusi otomatis dibuang.
 
 ## Commit
 
-Gunakan [Conventional Commits](https://www.conventionalcommits.org/):
-`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`, `security:`.
-
-## Branch
-
-PR ditujukan ke `dev`. Rilis di-merge dari `dev` ke `main` dan diberi tag `vX.Y.Z`.
+Gunakan Conventional Commits: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`.
