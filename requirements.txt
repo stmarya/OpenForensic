@@ -1,0 +1,5 @@
+# Dependensi Python inti OpenForensic / Kan9Ch3k
+# Dipasang oleh setup_tools.ps1 ke dalam .venv lokal.
+volatility3>=2.7.0
+oletools>=0.60.1
+pycryptodome>=3.20.0

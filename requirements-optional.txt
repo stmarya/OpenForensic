@@ -1,0 +1,14 @@
+# Dependensi opsional: dipasang dengan .\setup_tools.ps1 -IncludeOptional
+# Sebagian paket di sini rapuh terhadap versi Python; kegagalan tidak fatal.
+
+# Analisis PDF (Didier Stevens)
+pdfid>=1.2
+
+# Carving / entropy
+binwalk>=2.3.4
+
+# Decompiler Python legacy.
+# CATATAN: uncompyle6 tidak lagi dimaintain dan gagal pada bytecode Python >= 3.9.
+# Untuk Python modern gunakan pycdc (Decompyle++) yang ditaruh manual di bin\.
+uncompyle6>=3.9.0
+xdis>=6.1.0

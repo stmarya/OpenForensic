@@ -1,9 +1,36 @@
-# Ignore downloaded binaries and tools
+# Binary & tools yang diunduh
 bin/
 volatility3/
 
-# Ignore user generated reports
-reports/
+# Virtual environment Python
+.venv/
+venv/
+__pycache__/
+*.pyc
 
-# Ignore secret API keys
+# Report & bukti hasil analisis (JANGAN pernah di-commit)
+reports/
+evidence/
+cases/
+*.dmp
+*.raw
+*.vmem
+*.mem
+*.pcap
+*.pcapng
+
+# Kredensial
 .ai_config
+.ai_config.secure
+.env
+
+# Log & artefak lokal
+*.log
+TestResults*.xml
+
+# OS / editor
+Thumbs.db
+Desktop.ini
+.DS_Store
+.vscode/
+.idea/
