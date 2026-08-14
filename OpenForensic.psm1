@@ -6,8 +6,16 @@
       * Tidak pernah membangun command line lewat string interpolation. Semua proses
         eksternal dijalankan dengan operator '&' dan argumen berupa array, sehingga nama
         file bukti tidak dapat dipakai untuk command injection.
-      * Secret tidak pernah disimpan plaintext (DPAPI / environment variable).
+      * Secret tidak pernah disimpan plaintext (DPAPI di Windows, AES + PBKDF2 di
+        Linux/macOS, atau environment variable).
       * Output tool diperlakukan sebagai data tak terpercaya saat dikirim ke LLM.
+
+    Prinsip lintas platform:
+      * Tidak memakai $IsWindows secara langsung (tidak ada di PowerShell 5.1);
+        selalu lewat Test-OFWindows dari OpenForensic.Platform.psm1.
+      * Tidak memakai %USERNAME%/%COMPUTERNAME%; memakai API .NET.
+      * Resolusi executable memakai Resolve-OFCommand sehingga sufiks .exe/.cmd hanya
+        dipakai di Windows dan nama alternatif Unix ikut diperiksa.
 #>
 
 Set-StrictMode -Version Latest
@@ -16,11 +24,35 @@ $script:Root        = $PSScriptRoot
 $script:BinDir      = Join-Path $script:Root 'bin'
 $script:ReportsDir  = Join-Path $script:Root 'reports'
 $script:CatalogPath = Join-Path $script:Root 'tools.json'
-$script:KeyStore    = Join-Path $script:Root '.ai_config'
+$script:KeyStoreDefault = Join-Path $script:Root '.ai_config'
 $script:Utf8NoBom   = New-Object System.Text.UTF8Encoding($false)
 $script:MaxAiChars  = 100000
 $script:MaxWideScan = 67108864
 $script:MaxAsciiScan = 268435456
+$script:CoreToolkitVersion = 'OpenForensic 0.5.0'
+$script:KeyPbkdf2Iterations = 120000
+
+# Nama executable alternatif per tool di Linux/macOS. Katalog memakai nama Windows,
+# distribusi lain sering memakai nama berbeda.
+$script:UnixExecutableAliases = @{
+    '7z'        = @('7z', '7zz', '7za', '7zr')
+    'strings'   = @('strings')
+    'vol'       = @('vol', 'vol.py', 'volatility3')
+    'evtx_dump' = @('evtx_dump', 'evtxdump', 'evtx_dump.py')
+    'hayabusa'  = @('hayabusa', 'hayabusa-linux', 'hayabusa-mac')
+    'chainsaw'  = @('chainsaw', 'chainsaw_x86_64-unknown-linux-gnu')
+    'stegseek'  = @('stegseek')
+    'rizin'     = @('rizin', 'rz-bin')
+    'jadx'      = @('jadx')
+    'clamscan'  = @('clamscan')
+    'sqlite3'   = @('sqlite3')
+    'tshark'    = @('tshark')
+    'capinfos'  = @('capinfos')
+    'exiftool'  = @('exiftool')
+    'john'      = @('john', 'john-the-ripper')
+    'photorec'  = @('photorec')
+    'bulkextractor' = @('bulk_extractor', 'bulkextractor')
+}
 
 $script:Signatures = @(
     @{ Hex = '25504446';         Kind = 'pdf';     Description = 'PDF document' }
@@ -68,6 +100,116 @@ $script:ExtensionKinds = @{
 
 #region Helpers (private)
 
+function Test-OFCoreWindows {
+    <# Pembungkus aman: memakai Test-OFWindows bila lapisan platform tersedia. #>
+    if (Get-Command -Name 'Test-OFWindows' -ErrorAction SilentlyContinue) {
+        return [bool](Test-OFWindows)
+    }
+    $variable = Get-Variable -Name 'IsWindows' -ErrorAction SilentlyContinue
+    if ($variable) { return [bool]$variable.Value }
+    return $true
+}
+
+function Test-OFCoreInteractive {
+    if (Get-Command -Name 'Test-OFInteractive' -ErrorAction SilentlyContinue) {
+        return [bool](Test-OFInteractive)
+    }
+    if ($env:CI -or $env:OPENFORENSIC_NONINTERACTIVE) { return $false }
+    return $true
+}
+
+function Get-OFCoreUserName {
+    if ($env:OPENFORENSIC_EXAMINER) { return [string]$env:OPENFORENSIC_EXAMINER }
+    try {
+        $name = [string][System.Environment]::UserName
+        if ($name) { return $name }
+    } catch {
+        Write-Verbose 'Nama pengguna tidak tersedia dari runtime.'
+    }
+    if ($env:USERNAME) { return [string]$env:USERNAME }
+    if ($env:USER) { return [string]$env:USER }
+    return 'unknown'
+}
+
+function Get-OFCoreHostName {
+    try {
+        $name = [string][System.Environment]::MachineName
+        if ($name) { return $name }
+    } catch {
+        Write-Verbose 'Nama host tidak tersedia dari runtime.'
+    }
+    if ($env:COMPUTERNAME) { return [string]$env:COMPUTERNAME }
+    if ($env:HOSTNAME) { return [string]$env:HOSTNAME }
+    return 'unknown'
+}
+
+function Get-OFKeyStorePath {
+    <# Lokasi penyimpanan API key; mengikuti OPENFORENSIC_HOME bila diset. #>
+    if ($env:OPENFORENSIC_HOME) {
+        if (Get-Command -Name 'Get-OFDataRoot' -ErrorAction SilentlyContinue) {
+            return (Join-Path (Get-OFDataRoot -Create) '.ai_config')
+        }
+        return (Join-Path $env:OPENFORENSIC_HOME '.ai_config')
+    }
+    return $script:KeyStoreDefault
+}
+
+function Get-OFDefinitionValue {
+    param($Definition, [string]$Name, $Default = $null)
+    if ($null -eq $Definition) { return $Default }
+    if ($Definition.PSObject.Properties.Name -contains $Name) {
+        $value = $Definition.PSObject.Properties[$Name].Value
+        if ($null -eq $value) { return $Default }
+        return $value
+    }
+    return $Default
+}
+
+function Get-OFExecutableCandidate {
+    <#
+        Daftar nama executable yang perlu dicoba untuk sebuah definisi tool, sesuai OS.
+        Katalog boleh menyediakan executableByOs = @{ windows = '...'; linux = '...'; macos = '...' }.
+    #>
+    param([Parameter(Mandatory)]$Definition)
+
+    $names = New-Object System.Collections.ArrayList
+    $byOs = Get-OFDefinitionValue -Definition $Definition -Name 'executableByOs'
+    if ($byOs) {
+        $osKey = 'windows'
+        if (-not (Test-OFCoreWindows)) {
+            $osKey = 'linux'
+            $macFlag = Get-Variable -Name 'IsMacOS' -ErrorAction SilentlyContinue
+            if ($macFlag -and [bool]$macFlag.Value) { $osKey = 'macos' }
+        }
+        $specific = Get-OFDefinitionValue -Definition $byOs -Name $osKey
+        if ($specific) { [void]$names.Add([string]$specific) }
+    }
+
+    $executable = [string](Get-OFDefinitionValue -Definition $Definition -Name 'executable' '')
+    if ($executable) {
+        [void]$names.Add($executable)
+        if (-not (Test-OFCoreWindows)) {
+            # Di Unix nama file tidak memakai sufiks Windows.
+            foreach ($suffix in @('.exe', '.cmd', '.bat')) {
+                if ($executable.ToLowerInvariant().EndsWith($suffix)) {
+                    [void]$names.Add($executable.Substring(0, $executable.Length - $suffix.Length))
+                }
+            }
+        }
+    }
+
+    $id = [string](Get-OFDefinitionValue -Definition $Definition -Name 'id' '')
+    if (-not (Test-OFCoreWindows) -and $id -and $script:UnixExecutableAliases.ContainsKey($id)) {
+        foreach ($alias in $script:UnixExecutableAliases[$id]) { [void]$names.Add([string]$alias) }
+    }
+
+    $unique = New-Object System.Collections.ArrayList
+    foreach ($name in $names) {
+        if ($name -and -not $unique.Contains($name)) { [void]$unique.Add($name) }
+    }
+    return , @($unique)
+}
+
 function Write-OFText {
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -108,6 +250,46 @@ function ConvertFrom-OFSecureString {
     }
 }
 
+function Get-OFKeyPassphrase {
+    <#
+        Passphrase untuk penyimpanan API key non-Windows (AES 256 + PBKDF2).
+        Diambil dari $env:OPENFORENSIC_KEY_PASSPHRASE atau ditanyakan bila interaktif.
+    #>
+    param([switch]$Confirm)
+
+    if ($env:OPENFORENSIC_KEY_PASSPHRASE) {
+        return [string]$env:OPENFORENSIC_KEY_PASSPHRASE
+    }
+    if (-not (Test-OFCoreInteractive)) { return $null }
+
+    $secure = Read-Host 'Passphrase penyimpanan API key' -AsSecureString
+    if (-not $secure -or $secure.Length -eq 0) { return $null }
+    $plain = ConvertFrom-OFSecureString -Secure $secure
+    if ($Confirm) {
+        $again = Read-Host 'Ulangi passphrase' -AsSecureString
+        if (-not $again -or (ConvertFrom-OFSecureString -Secure $again) -ne $plain) {
+            Write-Host '[-] Passphrase tidak sama.' -ForegroundColor Red
+            return $null
+        }
+    }
+    return $plain
+}
+
+function Get-OFDerivedKey {
+    param(
+        [Parameter(Mandatory)][string]$Passphrase,
+        [Parameter(Mandatory)][byte[]]$Salt
+    )
+    $derive = New-Object System.Security.Cryptography.Rfc2898DeriveBytes(
+        $Passphrase, $Salt, $script:KeyPbkdf2Iterations,
+        [System.Security.Cryptography.HashAlgorithmName]::SHA256)
+    try {
+        return $derive.GetBytes(32)
+    } finally {
+        $derive.Dispose()
+    }
+}
+
 #endregion
 
 function Get-OFPath {
@@ -119,7 +301,7 @@ function Get-OFPath {
         Bin      = $script:BinDir
         Reports  = $script:ReportsDir
         Catalog  = $script:CatalogPath
-        KeyStore = $script:KeyStore
+        KeyStore = (Get-OFKeyStorePath)
     }
 }
 
@@ -160,19 +342,50 @@ function Resolve-OFTool {
     if (-not $definition) { throw "Tool '$Id' tidak terdaftar di tools.json" }
 
     $resolvedPath = $null
+    $resolvedFrom = 'none'
+
     if ($definition.source -eq 'builtin') {
         if (Get-Command -Name $definition.builtin -ErrorAction SilentlyContinue) {
             $resolvedPath = $definition.builtin
+            $resolvedFrom = 'builtin'
         }
     } else {
-        $candidate = Join-Path $script:BinDir $definition.executable
-        if (Test-Path -LiteralPath $candidate) {
-            $resolvedPath = $candidate
-        } else {
-            $command = Get-Command -Name $definition.executable -CommandType Application -ErrorAction SilentlyContinue |
+        $candidates = Get-OFExecutableCandidate -Definition $definition
+        $usePlatformResolver = [bool](Get-Command -Name 'Resolve-OFCommand' -ErrorAction SilentlyContinue)
+
+        foreach ($name in $candidates) {
+            if ($usePlatformResolver) {
+                $found = Resolve-OFCommand -Name ([System.IO.Path]::GetFileNameWithoutExtension($name)) -SearchPath @($script:BinDir)
+                if (-not $found.Found) {
+                    $found = Resolve-OFCommand -Name $name -SearchPath @($script:BinDir)
+                }
+                if ($found.Found) {
+                    $resolvedPath = $found.Path
+                    $resolvedFrom = $found.Source
+                    break
+                }
+                continue
+            }
+
+            $candidate = Join-Path $script:BinDir $name
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                $resolvedPath = $candidate
+                $resolvedFrom = 'local'
+                break
+            }
+            $command = Get-Command -Name $name -CommandType Application -ErrorAction SilentlyContinue |
                 Select-Object -First 1
-            if ($command) { $resolvedPath = $command.Source }
+            if ($command) {
+                $resolvedPath = $command.Source
+                $resolvedFrom = 'path'
+                break
+            }
         }
+    }
+
+    $installHint = [string](Get-OFDefinitionValue -Definition $definition -Name 'installHint' '')
+    if (-not $resolvedPath -and (Get-Command -Name 'Get-OFInstallHint' -ErrorAction SilentlyContinue)) {
+        $installHint = Get-OFInstallHint -ToolId $definition.id -FallbackHint $installHint
     }
 
     [pscustomobject]@{
@@ -182,8 +395,9 @@ function Resolve-OFTool {
         Category    = $definition.category
         Source      = $definition.source
         Path        = $resolvedPath
+        ResolvedFrom = $resolvedFrom
         Available   = [bool]$resolvedPath
-        InstallHint = $definition.installHint
+        InstallHint = $installHint
         Definition  = $definition
     }
 }
@@ -275,31 +489,63 @@ function Get-OFFileType {
 }
 
 function Select-OFTargetFile {
+    <#
+        .SYNOPSIS
+        Memilih file bukti: dialog grafis di Windows interaktif, prompt teks di platform lain.
+
+        .PARAMETER Path
+        Bila diisi, dipakai langsung tanpa dialog maupun prompt (dipakai CLI dan mode non-interaktif).
+    #>
     [CmdletBinding()]
     [OutputType([string])]
     param(
         [string]$Filter = 'All Files (*.*)|*.*',
         [string]$Title = 'Pilih file target untuk dianalisis',
-        [string]$InitialDirectory = $script:Root
+        [string]$InitialDirectory = $script:Root,
+        [string]$Path = ''
     )
 
-    try {
-        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
-        $dialog = New-Object System.Windows.Forms.OpenFileDialog
-        $dialog.Filter = $Filter
-        $dialog.Title = $Title
-        $dialog.InitialDirectory = $InitialDirectory
-        $dialog.Multiselect = $false
-        if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-            return $dialog.FileName
+    if (-not [string]::IsNullOrWhiteSpace($Path)) {
+        $cleaned = $Path.Trim().Trim('"')
+        if (-not (Test-Path -LiteralPath $cleaned)) {
+            Write-Warning "Path tidak ditemukan: $cleaned"
+            return $null
         }
-        return $null
-    } catch {
-        Write-Warning "Dialog GUI tidak tersedia: $($_.Exception.Message)"
-        $manual = Read-Host 'Masukkan path file target (kosongkan untuk batal)'
-        if ([string]::IsNullOrWhiteSpace($manual)) { return $null }
-        return $manual.Trim().Trim('"')
+        return (Resolve-Path -LiteralPath $cleaned).Path
     }
+
+    if (-not (Test-OFCoreInteractive)) {
+        Write-Warning 'Sesi non-interaktif: berikan -Path atau argumen CLI untuk memilih bukti.'
+        return $null
+    }
+
+    if (Test-OFCoreWindows) {
+        try {
+            Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+            $dialog = New-Object System.Windows.Forms.OpenFileDialog
+            $dialog.Filter = $Filter
+            $dialog.Title = $Title
+            $dialog.InitialDirectory = $InitialDirectory
+            $dialog.Multiselect = $false
+            if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+                return $dialog.FileName
+            }
+            return $null
+        } catch {
+            Write-Verbose "Dialog GUI tidak tersedia: $($_.Exception.Message)"
+        }
+    }
+
+    Write-Host $Title -ForegroundColor Cyan
+    Write-Host "    Direktori kerja: $InitialDirectory" -ForegroundColor DarkGray
+    $manual = Read-Host 'Masukkan path file target (kosongkan untuk batal)'
+    if ([string]::IsNullOrWhiteSpace($manual)) { return $null }
+    $manual = $manual.Trim().Trim('"').Trim("'")
+    if (-not (Test-Path -LiteralPath $manual)) {
+        Write-Warning "Path tidak ditemukan: $manual"
+        return $null
+    }
+    return (Resolve-Path -LiteralPath $manual).Path
 }
 
 function Read-OFChoice {
@@ -358,15 +604,22 @@ function New-OFReport {
     $textPath = Join-Path $script:ReportsDir ($stamp + '_' + $safeName + '_report.txt')
     $jsonPath = [System.IO.Path]::ChangeExtension($textPath, '.json')
 
+    $osText = "$($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
+    if (Get-Command -Name 'Get-OFPlatform' -ErrorAction SilentlyContinue) {
+        $platform = Get-OFPlatform
+        $osText = "$($platform.Os) $($platform.Architecture) / PowerShell $($platform.PSVersion)"
+    }
+
     $header = @(
         '==================================================================',
         '                  OPENFORENSIC ANALYSIS REPORT',
         '==================================================================',
         "Report ID   : $stamp",
         "Dibuat      : $(Get-Date -Format o)",
-        "Analis      : $($env:USERNAME)",
-        "Workstation : $($env:COMPUTERNAME)",
-        "Toolkit     : OpenForensic 0.2.0",
+        "Analis      : $(Get-OFCoreUserName)",
+        "Workstation : $(Get-OFCoreHostName)",
+        "Lingkungan  : $osText",
+        "Toolkit     : $($script:CoreToolkitVersion)",
         '------------------------------------------------------------------',
         '                        TARGET / BUKTI',
         '------------------------------------------------------------------',
@@ -429,7 +682,7 @@ function Add-OFReportEntry {
 
     [void]$Report.Entries.Add([pscustomobject]@{
         command         = $Command
-        arguments       = $Arguments
+        arguments        = $Arguments
         exitCode        = $ExitCode
         durationSeconds = [math]::Round($DurationSeconds, 3)
         executedAt      = (Get-Date).ToString('o')
@@ -456,9 +709,9 @@ function Save-OFReport {
     $payload = [pscustomobject]@{
         schemaVersion = 1
         reportId      = $Report.ReportId
-        toolkit       = 'OpenForensic 0.2.0'
-        analyst       = $env:USERNAME
-        workstation   = $env:COMPUTERNAME
+        toolkit       = $script:CoreToolkitVersion
+        analyst       = (Get-OFCoreUserName)
+        workstation   = (Get-OFCoreHostName)
         createdAt     = $Report.CreatedAt
         completedAt   = (Get-Date).ToString('o')
         target        = [pscustomobject]@{
@@ -665,7 +918,7 @@ function Invoke-OFTriage {
     foreach ($definition in $selected) {
         $tool = Resolve-OFTool -Id $definition.id -Catalog $catalog
         if (-not $tool.Available) {
-            Write-Host "[-] Lewati $($definition.name): tidak terpasang. $($definition.installHint)" -ForegroundColor DarkYellow
+            Write-Host "[-] Lewati $($definition.name): tidak terpasang. $($tool.InstallHint)" -ForegroundColor DarkYellow
             continue
         }
         Write-Host "[+] Menjalankan $($definition.name)..." -ForegroundColor Green
@@ -677,7 +930,8 @@ function Invoke-OFTriage {
     }
 
     if ($results.Count -eq 0) {
-        Write-Host '[-] Tidak ada tool yang berhasil dijalankan. Jalankan setup_tools.ps1 terlebih dahulu.' -ForegroundColor Red
+        $installer = if (Test-OFCoreWindows) { 'setup_tools.ps1' } else { './setup_tools.sh' }
+        Write-Host "[-] Tidak ada tool yang berhasil dijalankan. Jalankan $installer terlebih dahulu." -ForegroundColor Red
     }
     return $results
 }
@@ -731,11 +985,20 @@ function Invoke-OFStrings {
 }
 
 function Get-OFApiKey {
+    <#
+        .SYNOPSIS
+        Membaca API key dari environment variable, atau dari penyimpanan terenkripsi.
+
+        .DESCRIPTION
+        Windows  : DPAPI (terikat akun dan mesin).
+        Unix     : AES-256 dengan kunci PBKDF2 dari passphrase
+                   ($env:OPENFORENSIC_KEY_PASSPHRASE atau prompt).
+    #>
     [CmdletBinding()]
     [OutputType([string])]
     param()
 
-    foreach ($name in @('OPENFORENSIC_AI_KEY', 'GEMINI_API_KEY')) {
+    foreach ($name in @('OPENFORENSIC_AI_KEY', 'GEMINI_API_KEY', 'OPENAI_API_KEY')) {
         $value = [Environment]::GetEnvironmentVariable($name)
         if (-not [string]::IsNullOrWhiteSpace($value)) {
             Write-Verbose "API key diambil dari environment variable $name"
@@ -743,37 +1006,96 @@ function Get-OFApiKey {
         }
     }
 
-    if (-not (Test-Path -LiteralPath $script:KeyStore)) { return $null }
+    $keyStore = Get-OFKeyStorePath
+    if (-not (Test-Path -LiteralPath $keyStore)) { return $null }
 
     try {
-        $encrypted = (Get-Content -LiteralPath $script:KeyStore -Raw).Trim()
-        if ([string]::IsNullOrWhiteSpace($encrypted)) { return $null }
-        $secure = ConvertTo-SecureString -String $encrypted -ErrorAction Stop
+        $stored = (Get-Content -LiteralPath $keyStore -Raw).Trim()
+        if ([string]::IsNullOrWhiteSpace($stored)) { return $null }
+
+        if ($stored.StartsWith('pbkdf2:')) {
+            $parts = $stored.Split(':', 3)
+            if ($parts.Count -ne 3) { throw 'Format penyimpanan API key tidak dikenali.' }
+            $passphrase = Get-OFKeyPassphrase
+            if (-not $passphrase) {
+                Write-Warning 'Passphrase penyimpanan API key tidak tersedia (set $env:OPENFORENSIC_KEY_PASSPHRASE).'
+                return $null
+            }
+            $salt = [Convert]::FromBase64String($parts[1])
+            $key = Get-OFDerivedKey -Passphrase $passphrase -Salt $salt
+            $secure = ConvertTo-SecureString -String $parts[2] -Key $key -ErrorAction Stop
+            return (ConvertFrom-OFSecureString -Secure $secure)
+        }
+
+        if (-not (Test-OFCoreWindows)) {
+            Write-Warning 'File .ai_config dibuat dengan DPAPI (Windows) dan tidak dapat dibaca di platform ini. Gunakan environment variable API key.'
+            return $null
+        }
+
+        $secure = ConvertTo-SecureString -String $stored -ErrorAction Stop
         return (ConvertFrom-OFSecureString -Secure $secure)
     } catch {
-        Write-Warning "Gagal mendekripsi .ai_config (mungkin dibuat oleh user/mesin lain): $($_.Exception.Message)"
+        Write-Warning "Gagal mendekripsi penyimpanan API key: $($_.Exception.Message)"
         return $null
     }
 }
 
 function Set-OFApiKey {
+    <#
+        .SYNOPSIS
+        Menyimpan API key terenkripsi sesuai kemampuan platform.
+
+        .DESCRIPTION
+        Windows: DPAPI. Linux/macOS: AES-256 dengan kunci PBKDF2 dari passphrase.
+        Passphrase diambil dari $env:OPENFORENSIC_KEY_PASSPHRASE atau ditanyakan.
+    #>
     [CmdletBinding(SupportsShouldProcess)]
     param([Parameter(Mandatory)][System.Security.SecureString]$ApiKey)
 
-    if (-not $PSCmdlet.ShouldProcess($script:KeyStore, 'Simpan API key terenkripsi')) { return }
+    $keyStore = Get-OFKeyStorePath
+    if (-not $PSCmdlet.ShouldProcess($keyStore, 'Simpan API key terenkripsi')) { return }
 
-    $encrypted = ConvertFrom-SecureString -SecureString $ApiKey
-    [System.IO.File]::WriteAllText($script:KeyStore, $encrypted, $script:Utf8NoBom)
-    Write-Host "[+] API key disimpan terenkripsi (DPAPI) di $($script:KeyStore)" -ForegroundColor Green
-    Write-Host '    Hanya akun Windows ini di mesin ini yang bisa mendekripsinya.' -ForegroundColor DarkGray
+    $mode = 'dpapi'
+    if (Get-Command -Name 'Get-OFSecureStorageMode' -ErrorAction SilentlyContinue) {
+        $mode = Get-OFSecureStorageMode
+    } elseif (-not (Test-OFCoreWindows)) {
+        $mode = 'pbkdf2'
+    }
+
+    if ($mode -eq 'dpapi') {
+        $encrypted = ConvertFrom-SecureString -SecureString $ApiKey
+        [System.IO.File]::WriteAllText($keyStore, $encrypted, $script:Utf8NoBom)
+        Write-Host "[+] API key disimpan terenkripsi (DPAPI) di $keyStore" -ForegroundColor Green
+        Write-Host '    Hanya akun Windows ini di mesin ini yang bisa mendekripsinya.' -ForegroundColor DarkGray
+        return
+    }
+
+    $passphrase = Get-OFKeyPassphrase -Confirm
+    if (-not $passphrase) {
+        Write-Host '[-] Tanpa passphrase, API key tidak disimpan. Alternatif: export OPENFORENSIC_AI_KEY=...' -ForegroundColor Yellow
+        return
+    }
+
+    $salt = New-Object 'byte[]' 16
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($salt) } finally { $rng.Dispose() }
+
+    $key = Get-OFDerivedKey -Passphrase $passphrase -Salt $salt
+    $encrypted = ConvertFrom-SecureString -SecureString $ApiKey -Key $key
+    $payload = 'pbkdf2:' + [Convert]::ToBase64String($salt) + ':' + $encrypted
+    [System.IO.File]::WriteAllText($keyStore, $payload, $script:Utf8NoBom)
+
+    Write-Host "[+] API key disimpan terenkripsi (AES-256, kunci PBKDF2) di $keyStore" -ForegroundColor Green
+    Write-Host '    Passphrase tidak disimpan. Set $env:OPENFORENSIC_KEY_PASSPHRASE agar tidak ditanya berulang.' -ForegroundColor DarkGray
 }
 
 function Clear-OFApiKey {
     [CmdletBinding(SupportsShouldProcess)]
     param()
-    if (Test-Path -LiteralPath $script:KeyStore) {
-        if ($PSCmdlet.ShouldProcess($script:KeyStore, 'Hapus API key')) {
-            Remove-Item -LiteralPath $script:KeyStore -Force
+    $keyStore = Get-OFKeyStorePath
+    if (Test-Path -LiteralPath $keyStore) {
+        if ($PSCmdlet.ShouldProcess($keyStore, 'Hapus API key')) {
+            Remove-Item -LiteralPath $keyStore -Force
             Write-Host '[+] API key dihapus.' -ForegroundColor Green
         }
     } else {
@@ -811,6 +1133,10 @@ function Invoke-OFAiAnalysis {
     $apiKey = Get-OFApiKey
     if (-not $apiKey) {
         Write-Host '[!] Belum ada API key. Dapatkan gratis di https://aistudio.google.com/app/apikey' -ForegroundColor Yellow
+        if (-not (Test-OFCoreInteractive)) {
+            Write-Host '[-] Sesi non-interaktif: set $env:OPENFORENSIC_AI_KEY terlebih dahulu.' -ForegroundColor Red
+            return $null
+        }
         $secure = Read-Host 'Masukkan Gemini API Key (input disembunyikan)' -AsSecureString
         if ($secure.Length -eq 0) {
             Write-Host '[-] API key kosong. Dibatalkan.' -ForegroundColor Red
@@ -871,7 +1197,9 @@ function Invoke-OFAiAnalysis {
     Write-Host '[*] Mengirim data ke Gemini API...' -ForegroundColor Yellow
 
     try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        if (Test-OFCoreWindows -and $PSVersionTable.PSEdition -eq 'Desktop') {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        }
         $uri = 'https://generativelanguage.googleapis.com/v1beta/models/' + $Model + ':generateContent'
         $response = Invoke-RestMethod -Uri $uri -Method Post `
             -Headers @{ 'x-goog-api-key' = $apiKey } `
@@ -881,8 +1209,10 @@ function Invoke-OFAiAnalysis {
     } catch {
         Write-Host "[-] Gagal menghubungi Gemini API: $($_.Exception.Message)" -ForegroundColor Red
         Write-Host '    Periksa validitas API key dan koneksi internet.' -ForegroundColor Red
-        $reset = Read-Host 'Hapus API key tersimpan? (y/N)'
-        if ($reset -match '^[yY]$') { Clear-OFApiKey }
+        if (Test-OFCoreInteractive) {
+            $reset = Read-Host 'Hapus API key tersimpan? (y/N)'
+            if ($reset -match '^[yY]$') { Clear-OFApiKey }
+        }
         return $null
     }
 
@@ -925,10 +1255,22 @@ function Invoke-OFAiAnalysis {
 }
 
 function Update-OFTool {
+    <#
+        .SYNOPSIS
+        Memperbarui Volatility 3 dan paket Python pendukung, lintas platform.
+    #>
     [CmdletBinding(SupportsShouldProcess)]
     param()
 
     if (-not $PSCmdlet.ShouldProcess('OpenForensic tools', 'Perbarui dependensi')) { return }
+
+    $python = 'python'
+    foreach ($name in @('python3', 'python')) {
+        if (Get-Command -Name $name -CommandType Application -ErrorAction SilentlyContinue) {
+            $python = $name
+            break
+        }
+    }
 
     $volatilityDir = Join-Path $script:Root 'volatility3'
     if (Test-Path -LiteralPath $volatilityDir) {
@@ -937,20 +1279,25 @@ function Update-OFTool {
         try {
             & git pull --ff-only
             if ((Get-OFLastExitCode) -ne 0) { Write-Warning 'git pull gagal.' }
-            & python -m pip install --upgrade .
+            & $python -m pip install --upgrade .
             if ((Get-OFLastExitCode) -ne 0) { Write-Warning 'pip install volatility3 gagal.' }
         } finally {
             Pop-Location
         }
     } else {
-        Write-Host '[i] Folder volatility3 tidak ada. Jalankan setup_tools.ps1 dahulu.' -ForegroundColor DarkGray
+        $installer = if (Test-OFCoreWindows) { 'setup_tools.ps1' } else { './setup_tools.sh' }
+        Write-Host "[i] Folder volatility3 tidak ada. Jalankan $installer dahulu." -ForegroundColor DarkGray
     }
 
     Write-Host '[+] Memperbarui paket Python...' -ForegroundColor Yellow
-    & python -m pip install --upgrade oletools uncompyle6 decompyle3 pycryptodome pefile binwalk
+    $pipArgs = @('-m', 'pip', 'install', '--upgrade')
+    if (-not (Test-OFCoreWindows)) { $pipArgs += '--user' }
+    $pipArgs += @('oletools', 'uncompyle6', 'decompyle3', 'pycryptodome', 'pefile', 'binwalk')
+    & $python @pipArgs
     if ((Get-OFLastExitCode) -ne 0) { Write-Warning 'Sebagian paket gagal diperbarui.' }
 
-    Write-Host '[+] Selesai. Jalankan setup_tools.ps1 -SkipVolatility untuk menyalin ulang executable ke bin/.' -ForegroundColor Green
+    $note = if (Test-OFCoreWindows) { 'setup_tools.ps1 -SkipVolatility' } else { './setup_tools.sh --skip-python' }
+    Write-Host "[+] Selesai. Jalankan $note untuk menyalin ulang executable ke bin/." -ForegroundColor Green
 }
 
 Export-ModuleMember -Function @(
