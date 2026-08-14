@@ -12,6 +12,13 @@
       - Deduplikasi bukti berdasarkan SHA256
       - Eksekusi proses dengan batas waktu (anti-hang)
 
+    Catatan lintas platform:
+      - Mode kunci segel dipilih otomatis lewat Get-OFSecureStorageMode: DPAPI di
+        Windows, PBKDF2 (passphrase) di Linux/macOS.
+      - Manifest memakai path relatif bergaya POSIX dan akhiran baris LF agar hash
+        manifest identik di Windows, Linux, dan macOS.
+      - Identitas pemeriksa diambil dari API .NET, bukan %USERNAME%/%COMPUTERNAME%.
+
     Dimuat sebagai NestedModule oleh OpenForensic.psd1 sehingga dapat memanggil
     fungsi modul inti (Resolve-OFTool, Get-OFEvidenceHash) dan modul workflow
     (Get-OFCase, Save-OFCase, Add-OFCaseFinding).
@@ -28,6 +35,8 @@ $script:IntSealName = 'case.seal.json'
 $script:IntToolVersionCache = @{}
 $script:IntVersionProbes = @('--version', '-version', '-V', '-v', 'version')
 $script:IntPbkdf2Iterations = 120000
+$script:IntToolkitVersion = 'OpenForensic 0.5.0'
+$script:IntSealSchemaVersion = 2
 
 try { Add-Type -AssemblyName System.Security -ErrorAction Stop } catch { Write-Verbose 'System.Security tidak tersedia; segel DPAPI dilewati.' }
 
@@ -51,6 +60,44 @@ function Set-OFIntProperty {
     }
 }
 
+function Test-OFIntWindows {
+    if (Get-Command -Name 'Test-OFWindows' -ErrorAction SilentlyContinue) { return [bool](Test-OFWindows) }
+    $flag = Get-Variable -Name 'IsWindows' -ErrorAction SilentlyContinue
+    if ($flag) { return [bool]$flag.Value }
+    return $true
+}
+
+function Get-OFIntStorageMode {
+    if (Get-Command -Name 'Get-OFSecureStorageMode' -ErrorAction SilentlyContinue) {
+        return [string](Get-OFSecureStorageMode)
+    }
+    if (Test-OFIntWindows) { return 'dpapi' }
+    return 'pbkdf2'
+}
+
+function Get-OFIntActor {
+    if ($env:OPENFORENSIC_EXAMINER) { return [string]$env:OPENFORENSIC_EXAMINER }
+    try {
+        $name = [string][System.Environment]::UserName
+        if ($name) { return $name }
+    } catch {
+        Write-Verbose 'Nama pengguna tidak tersedia dari runtime.'
+    }
+    if ($env:USER) { return [string]$env:USER }
+    return 'unknown'
+}
+
+function Get-OFIntHostName {
+    try {
+        $name = [string][System.Environment]::MachineName
+        if ($name) { return $name }
+    } catch {
+        Write-Verbose 'Nama host tidak tersedia dari runtime.'
+    }
+    if ($env:HOSTNAME) { return [string]$env:HOSTNAME }
+    return 'unknown'
+}
+
 function Get-OFIntCaseDir {
     param([Parameter(Mandatory)]$Case)
     if (-not (Test-OFIntProperty -InputObject $Case -Name 'caseDir')) {
@@ -62,10 +109,67 @@ function Get-OFIntCaseDir {
 }
 
 function Get-OFIntRelativePath {
+    <#
+        Path relatif bergaya POSIX (selalu '/') agar manifest dan hash manifest
+        identik di Windows, Linux, dan macOS.
+    #>
     param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$FullPath)
-    $normalizedRoot = $Root.TrimEnd('\\', '/')
-    if ($FullPath.Length -le $normalizedRoot.Length) { return (Split-Path -Path $FullPath -Leaf) }
-    return $FullPath.Substring($normalizedRoot.Length).TrimStart('\\', '/')
+    $separators = [char[]]@([char]92, [char]47)
+    $normalizedRoot = $Root.TrimEnd($separators)
+    if ($FullPath.Length -le $normalizedRoot.Length) {
+        return (Split-Path -Path $FullPath -Leaf)
+    }
+    $relative = $FullPath.Substring($normalizedRoot.Length).TrimStart($separators)
+    return $relative.Replace([char]92, [char]47)
+}
+
+function ConvertFrom-OFIntSecureString {
+    param([Parameter(Mandatory)][System.Security.SecureString]$Secure)
+    $pointer = [System.Runtime.InteropServices.Marshal]::SecureStringToGlobalAllocUnicode($Secure)
+    try {
+        return [System.Runtime.InteropServices.Marshal]::PtrToStringUni($pointer)
+    } finally {
+        [System.Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocUnicode($pointer)
+    }
+}
+
+function Get-OFIntDerivedKey {
+    <#
+        Menurunkan kunci 32 byte dari passphrase. Segel baru memakai SHA-256 bila
+        runtime mendukung; segel lama (kdfHash = sha1) tetap dapat diverifikasi.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Passphrase,
+        [Parameter(Mandatory)][byte[]]$Salt,
+        [int]$Iterations = $script:IntPbkdf2Iterations,
+        [ValidateSet('sha1', 'sha256')][string]$HashName = 'sha256'
+    )
+
+    if ($HashName -eq 'sha256') {
+        try {
+            $derive = New-Object System.Security.Cryptography.Rfc2898DeriveBytes(
+                $Passphrase, $Salt, $Iterations,
+                [System.Security.Cryptography.HashAlgorithmName]::SHA256)
+            try { return $derive.GetBytes(32) } finally { $derive.Dispose() }
+        } catch {
+            Write-Verbose "PBKDF2-SHA256 tidak tersedia, memakai SHA-1: $($_.Exception.Message)"
+        }
+    }
+
+    $derive = New-Object System.Security.Cryptography.Rfc2898DeriveBytes($Passphrase, $Salt, $Iterations)
+    try { return $derive.GetBytes(32) } finally { $derive.Dispose() }
+}
+
+function Test-OFIntPbkdf2Sha256 {
+    try {
+        $salt = New-Object 'byte[]' 8
+        $derive = New-Object System.Security.Cryptography.Rfc2898DeriveBytes(
+            'probe', $salt, 1, [System.Security.Cryptography.HashAlgorithmName]::SHA256)
+        try { [void]$derive.GetBytes(1) } finally { $derive.Dispose() }
+        return $true
+    } catch {
+        return $false
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -78,7 +182,7 @@ function Invoke-OFProcessWithTimeout {
         Menjalankan proses eksternal dengan batas waktu dan menangkap stdout/stderr.
     .DESCRIPTION
         Argumen dilewatkan sebagai array (tanpa evaluasi shell). Bila proses melewati
-        batas waktu, seluruh process tree dihentikan dan TimedOut bernilai true.
+        batas waktu, proses dihentikan dan TimedOut bernilai true.
     #>
     [CmdletBinding()]
     param(
@@ -179,7 +283,7 @@ function Get-OFToolVersion {
         return $result
     }
     if ($tool.Source -eq 'builtin') {
-        $result.Version = "built-in ($($MyInvocation.MyCommand.Module.Version))"
+        $result.Version = "built-in ($($script:IntToolkitVersion))"
         $result.ProbedWith = 'modul'
         $script:IntToolVersionCache[$ToolId] = $result
         return $result
@@ -195,7 +299,7 @@ function Get-OFToolVersion {
         $text = ($run.StandardOutput + "`n" + $run.StandardError)
         $lines = @($text -split "`r?`n" | Where-Object { $_ -and $_.Trim() })
         if ($lines.Count -eq 0) { continue }
-        $versionLine = $lines | Where-Object { $_ -match '\\d+\\.\\d+' } | Select-Object -First 1
+        $versionLine = $lines | Where-Object { $_ -match '\d+\.\d+' } | Select-Object -First 1
         if (-not $versionLine) { $versionLine = $lines[0] }
         $result.Version = $versionLine.Trim()
         $result.ProbedWith = $probe
@@ -210,10 +314,6 @@ function Update-OFCaseToolVersions {
     <#
     .SYNOPSIS
         Mencatat versi seluruh tool yang dipakai pada kasus ke dalam case.json.
-    .DESCRIPTION
-        Tanpa catatan versi, hasil pemeriksaan tidak dapat direproduksi. Fungsi ini
-        memindai analisis yang sudah dijalankan pada setiap bukti, lalu menyimpan versi
-        tool ke properti toolVersions.
     #>
     [CmdletBinding()]
     param(
@@ -226,7 +326,9 @@ function Update-OFCaseToolVersions {
     $toolIds = New-Object System.Collections.ArrayList
 
     if ($AllTools) {
-        foreach ($entry in $catalog.tools) { [void]$toolIds.Add($entry.id) }
+        foreach ($entry in @($catalog)) {
+            if ($entry.id -and -not $toolIds.Contains($entry.id)) { [void]$toolIds.Add($entry.id) }
+        }
     } else {
         if (Test-OFIntProperty -InputObject $Case -Name 'evidence') {
             foreach ($evidence in @($Case.evidence)) {
@@ -267,8 +369,8 @@ function Protect-OFEvidenceFile {
     .SYNOPSIS
         Menandai berkas bukti sebagai read-only (write-block tingkat aplikasi).
     .DESCRIPTION
-        Bukan pengganti write blocker perangkat keras, tetapi mencegah tool yang
-        keliru menulis ke berkas bukti atau salinan kerjanya.
+        Bukan pengganti write blocker perangkat keras. Di Windows atribut ReadOnly
+        dipakai; di Linux/macOS PowerShell memetakannya ke bit tulis pada mode file.
     #>
     [CmdletBinding()]
     param(
@@ -279,10 +381,10 @@ function Protect-OFEvidenceFile {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Berkas tidak ditemukan: $Path" }
     $item = Get-Item -LiteralPath $Path -Force
     $wasReadOnly = $item.IsReadOnly
-    if ($Release) {
-        $item.IsReadOnly = $false
-    } else {
-        $item.IsReadOnly = $true
+    try {
+        $item.IsReadOnly = -not [bool]$Release
+    } catch {
+        Write-Warning "Tidak dapat mengubah atribut tulis di platform ini: $($_.Exception.Message)"
     }
     return [pscustomobject]@{
         Path        = $item.FullName
@@ -295,18 +397,18 @@ function Protect-OFEvidenceFile {
 function Test-OFEvidenceLock {
     <#
     .SYNOPSIS
-        Memeriksa apakah berkas bukti dapat dibuka untuk dibaca tanpa mengubahnya,
-        dan apakah ada proses lain yang menahannya secara eksklusif.
+        Memeriksa apakah berkas bukti dapat dibaca tanpa mengubahnya, dan apakah ada
+        proses lain yang menahannya secara eksklusif.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
 
     $result = [pscustomobject]@{
-        Path       = $Path
-        Readable   = $false
+        Path          = $Path
+        Readable      = $false
         LockedByOther = $false
-        ReadOnly   = $false
-        Message    = ''
+        ReadOnly      = $false
+        Message       = ''
     }
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         $result.Message = 'Berkas tidak ditemukan.'
@@ -347,7 +449,7 @@ function Get-OFHashAllowlist {
         foreach ($line in (Get-Content -LiteralPath $script:IntAllowlistPath -Encoding UTF8)) {
             $trimmed = $line.Trim()
             if (-not $trimmed -or $trimmed.StartsWith('#')) { continue }
-            $parts = $trimmed -split '\\s+', 2
+            $parts = $trimmed -split '\s+', 2
             $hash = $parts[0].ToUpperInvariant()
             if ($hash -notmatch '^[0-9A-F]{64}$') { continue }
             $note = if ($parts.Count -gt 1) { $parts[1] } else { '' }
@@ -390,7 +492,8 @@ function Add-OFHashToAllowlist {
     $upper = $Sha256.ToUpperInvariant()
     if (Test-OFHashAllowlist -Sha256 $upper) { return $false }
     $stamp = (Get-Date).ToString('yyyy-MM-dd')
-    Add-Content -LiteralPath $script:IntAllowlistPath -Value ("{0} {1} (ditambahkan {2} oleh {3})" -f $upper, $Note, $stamp, $env:USERNAME) -Encoding UTF8
+    $entry = '{0} {1} (ditambahkan {2} oleh {3})' -f $upper, $Note, $stamp, (Get-OFIntActor)
+    Add-Content -LiteralPath $script:IntAllowlistPath -Value $entry -Encoding UTF8
     $script:IntAllowlistCache = $null
     return $true
 }
@@ -425,8 +528,6 @@ function Test-OFEvidenceDuplicate {
     <#
     .SYNOPSIS
         Mencari bukti yang sudah ada di kasus dengan SHA256 sama.
-    .OUTPUTS
-        Objek bukti yang duplikat, atau $null bila belum ada.
     #>
     [CmdletBinding()]
     param(
@@ -452,9 +553,9 @@ function New-OFCaseManifest {
     .SYNOPSIS
         Membuat manifest SHA256 atas seluruh isi folder kasus.
     .DESCRIPTION
-        Manifest membuat setiap perubahan pasca-pemeriksaan (termasuk pada case.json,
-        log tool, dan report) dapat dideteksi. Berkas manifest dan segel tidak ikut
-        dihitung agar tidak melingkar.
+        Manifest memakai path relatif POSIX dan akhiran baris LF sehingga hash
+        manifest tidak berubah hanya karena berpindah OS. Berkas manifest dan segel
+        tidak ikut dihitung agar tidak melingkar.
     #>
     [CmdletBinding()]
     param(
@@ -467,30 +568,37 @@ function New-OFCaseManifest {
     $sealPath = Join-Path $caseDir $script:IntSealName
 
     $files = @(Get-ChildItem -LiteralPath $caseDir -Recurse -File -Force |
-        Where-Object { $_.FullName -ne $manifestPath -and $_.FullName -ne $sealPath } |
-        Sort-Object -Property FullName)
+        Where-Object { $_.FullName -ne $manifestPath -and $_.FullName -ne $sealPath })
+
+    $entries = New-Object System.Collections.ArrayList
+    $totalBytes = 0
+    foreach ($file in $files) {
+        $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+        $relative = Get-OFIntRelativePath -Root $caseDir -FullPath $file.FullName
+        [void]$entries.Add([pscustomobject]@{ Hash = $hash; Relative = $relative; Length = $file.Length })
+        $totalBytes += $file.Length
+    }
+
+    # Urutkan berdasarkan path relatif POSIX agar urutan sama di semua OS.
+    $sorted = @($entries | Sort-Object -Property Relative)
 
     $lines = New-Object System.Collections.ArrayList
     [void]$lines.Add('# OpenForensic case manifest (SHA256)')
     [void]$lines.Add("# caseId: $($Case.caseId)")
     [void]$lines.Add("# dibuat: $((Get-Date).ToString('o'))")
-    [void]$lines.Add("# oleh  : $env:USERNAME @ $env:COMPUTERNAME")
-    [void]$lines.Add('# format: <SHA256>  <path relatif>  <bytes>')
-
-    $totalBytes = 0
-    foreach ($file in $files) {
-        $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
-        $relative = Get-OFIntRelativePath -Root $caseDir -FullPath $file.FullName
-        [void]$lines.Add(('{0}  {1}  {2}' -f $hash, $relative, $file.Length))
-        $totalBytes += $file.Length
+    [void]$lines.Add("# oleh  : $(Get-OFIntActor) @ $(Get-OFIntHostName)")
+    [void]$lines.Add("# toolkit: $($script:IntToolkitVersion)")
+    [void]$lines.Add('# format: <SHA256>  <path relatif POSIX>  <bytes>')
+    foreach ($entry in $sorted) {
+        [void]$lines.Add(('{0}  {1}  {2}' -f $entry.Hash, $entry.Relative, $entry.Length))
     }
 
-    [System.IO.File]::WriteAllText($manifestPath, (($lines -join "`r`n") + "`r`n"), $script:IntUtf8)
-    if (-not $Quiet) { Write-Host "    [manifest] $($files.Count) berkas -> $script:IntManifestName" -ForegroundColor DarkGray }
+    [System.IO.File]::WriteAllText($manifestPath, (($lines -join "`n") + "`n"), $script:IntUtf8)
+    if (-not $Quiet) { Write-Host "    [manifest] $($sorted.Count) berkas -> $script:IntManifestName" -ForegroundColor DarkGray }
 
     return [pscustomobject]@{
         ManifestPath = $manifestPath
-        FileCount    = $files.Count
+        FileCount    = $sorted.Count
         TotalBytes   = $totalBytes
         CreatedAt    = (Get-Date).ToString('o')
     }
@@ -512,23 +620,36 @@ function Test-OFCaseManifest {
         ManifestPath = $manifestPath
         Present      = (Test-Path -LiteralPath $manifestPath)
         Ok           = $false
+        Parsed       = $false
         Modified     = @()
         Missing      = @()
         Added        = @()
         FileCount    = 0
+        Message      = ''
         CheckedAt    = (Get-Date).ToString('o')
     }
-    if (-not $result.Present) { return $result }
+    if (-not $result.Present) {
+        $result.Message = 'Manifest belum dibuat.'
+        return $result
+    }
 
     $expected = @{}
+    $lineRegex = '^([0-9A-Fa-f]{64})\s\s(.+?)\s\s(\d+)$'
     foreach ($line in (Get-Content -LiteralPath $manifestPath -Encoding UTF8)) {
-        $trimmed = $line.Trim()
+        $trimmed = $line.TrimEnd()
         if (-not $trimmed -or $trimmed.StartsWith('#')) { continue }
-        $parts = $trimmed -split '\\s{2,}'
-        if ($parts.Count -lt 2) { continue }
-        $expected[$parts[1]] = $parts[0].ToUpperInvariant()
+        $match = [regex]::Match($trimmed, $lineRegex)
+        if (-not $match.Success) { continue }
+        $relative = $match.Groups[2].Value.Replace([char]92, [char]47)
+        $expected[$relative] = $match.Groups[1].Value.ToUpperInvariant()
     }
     $result.FileCount = $expected.Count
+    $result.Parsed = ($expected.Count -gt 0)
+
+    if (-not $result.Parsed) {
+        $result.Message = 'Manifest ada tetapi tidak satu barisnya dapat diurai - anggap tidak valid.'
+        return $result
+    }
 
     $modified = New-Object System.Collections.ArrayList
     $missing = New-Object System.Collections.ArrayList
@@ -554,6 +675,11 @@ function Test-OFCaseManifest {
     $result.Missing = @($missing)
     $result.Added = @($added)
     $result.Ok = ($modified.Count -eq 0 -and $missing.Count -eq 0)
+    $result.Message = if ($result.Ok) {
+        'Seluruh berkas pada manifest masih utuh.'
+    } else {
+        "Manifest tidak cocok: $($modified.Count) berubah, $($missing.Count) hilang."
+    }
     return $result
 }
 
@@ -566,16 +692,21 @@ function New-OFCaseSeal {
     .SYNOPSIS
         Menyegel manifest kasus dengan HMAC-SHA256.
     .DESCRIPTION
-        Dua mode kunci:
-          - Passphrase: kunci diturunkan dengan PBKDF2 (120.000 iterasi, salt acak).
-            Segel dapat diverifikasi di mesin lain oleh siapa pun yang memegang passphrase.
-          - DPAPI (default): kunci acak 32 byte dilindungi DPAPI CurrentUser, sehingga
-            hanya akun Windows yang menyegel dapat memverifikasi. Cocok untuk kerja lokal.
+        Mode kunci dipilih otomatis sesuai platform:
+          - Windows tanpa -Passphrase: kunci acak 32 byte dilindungi DPAPI CurrentUser.
+          - Linux/macOS atau bila -Passphrase diberikan: kunci diturunkan dengan PBKDF2
+            (120.000 iterasi, salt acak) sehingga segel dapat diverifikasi di mesin lain.
+        Di Linux/macOS tanpa passphrase, segel tidak dapat dibuat karena tidak ada
+        penyimpanan kunci setara DPAPI; fungsi akan menolak dengan pesan yang jelas.
+    .PARAMETER Force
+        Mengizinkan pembuatan segel PBKDF2 dari $env:OPENFORENSIC_SEAL_PASSPHRASE
+        pada sesi non-interaktif (mis. pipeline CI atau container).
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]$Case,
         [securestring]$Passphrase,
+        [switch]$Force,
         [switch]$Quiet
     )
 
@@ -586,21 +717,37 @@ function New-OFCaseSeal {
     }
     $manifestBytes = [System.IO.File]::ReadAllBytes($manifestPath)
 
-    $mode = 'dpapi'
-    $salt = New-Object byte[] 16
-    ([System.Security.Cryptography.RandomNumberGenerator]::Create()).GetBytes($salt)
+    $storageMode = Get-OFIntStorageMode
+
+    # Passphrase dari environment dipakai bila tersedia dan belum diberikan eksplisit.
+    if (-not $Passphrase -and $env:OPENFORENSIC_SEAL_PASSPHRASE) {
+        $Passphrase = ConvertTo-SecureString -String $env:OPENFORENSIC_SEAL_PASSPHRASE -AsPlainText -Force
+        if (-not $Quiet) { Write-Host '    [seal] passphrase diambil dari OPENFORENSIC_SEAL_PASSPHRASE' -ForegroundColor DarkGray }
+    }
+
+    if (-not $Passphrase -and $storageMode -ne 'dpapi') {
+        throw ('Segel di platform ini memerlukan passphrase karena DPAPI tidak tersedia. ' +
+            'Jalankan ulang dengan -Passphrase, atau set $env:OPENFORENSIC_SEAL_PASSPHRASE.')
+    }
+
+    $mode = if ($Passphrase) { 'pbkdf2' } else { 'dpapi' }
+    $salt = New-Object 'byte[]' 16
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($salt) } finally { $rng.Dispose() }
+
     $protectedKey = $null
     $key = $null
+    $kdfHash = $null
 
-    if ($Passphrase) {
-        $mode = 'pbkdf2'
-        $plain = [System.Runtime.InteropServices.Marshal]::PtrToStringUni(
-            [System.Runtime.InteropServices.Marshal]::SecureStringToGlobalAllocUnicode($Passphrase))
-        $derive = New-Object System.Security.Cryptography.Rfc2898DeriveBytes($plain, $salt, $script:IntPbkdf2Iterations)
-        try { $key = $derive.GetBytes(32) } finally { $derive.Dispose() }
+    if ($mode -eq 'pbkdf2') {
+        $kdfHash = if (Test-OFIntPbkdf2Sha256) { 'sha256' } else { 'sha1' }
+        $plain = ConvertFrom-OFIntSecureString -Secure $Passphrase
+        if ([string]::IsNullOrEmpty($plain)) { throw 'Passphrase segel kosong.' }
+        $key = Get-OFIntDerivedKey -Passphrase $plain -Salt $salt -Iterations $script:IntPbkdf2Iterations -HashName $kdfHash
     } else {
-        $key = New-Object byte[] 32
-        ([System.Security.Cryptography.RandomNumberGenerator]::Create()).GetBytes($key)
+        $key = New-Object 'byte[]' 32
+        $rngKey = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+        try { $rngKey.GetBytes($key) } finally { $rngKey.Dispose() }
         try {
             $protectedBytes = [System.Security.Cryptography.ProtectedData]::Protect(
                 $key, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
@@ -617,28 +764,42 @@ function New-OFCaseSeal {
         $hmac.Dispose()
     }
 
+    $environmentText = "$($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
+    if (Get-Command -Name 'Get-OFPlatform' -ErrorAction SilentlyContinue) {
+        $platform = Get-OFPlatform
+        $environmentText = "$($platform.Os) $($platform.Architecture) / PowerShell $($platform.PSVersion)"
+    }
+
     $seal = [ordered]@{
-        schemaVersion  = 1
+        schemaVersion  = $script:IntSealSchemaVersion
         caseId         = $Case.caseId
         algorithm      = 'HMACSHA256'
         keyMode        = $mode
+        kdfHash        = $kdfHash
         iterations     = if ($mode -eq 'pbkdf2') { $script:IntPbkdf2Iterations } else { $null }
         salt           = [Convert]::ToBase64String($salt)
         protectedKey   = $protectedKey
         manifestSha256 = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash
         signature      = $signature
         sealedAt       = (Get-Date).ToString('o')
-        sealedBy       = "$env:USERNAME@$env:COMPUTERNAME"
-        toolkit        = 'OpenForensic 0.4.0'
+        sealedBy       = "$(Get-OFIntActor)@$(Get-OFIntHostName)"
+        sealedOn       = $environmentText
+        toolkit        = $script:IntToolkitVersion
     }
 
     $sealPath = Join-Path $caseDir $script:IntSealName
     [System.IO.File]::WriteAllText($sealPath, ($seal | ConvertTo-Json -Depth 5), $script:IntUtf8)
-    if (-not $Quiet) { Write-Host "    [seal] mode $mode -> $script:IntSealName" -ForegroundColor DarkGray }
+    if (-not $Quiet) {
+        Write-Host "    [seal] mode $mode -> $script:IntSealName" -ForegroundColor DarkGray
+        if ($mode -eq 'dpapi') {
+            Write-Host '    [seal] catatan: segel DPAPI hanya dapat diverifikasi oleh akun Windows ini.' -ForegroundColor DarkGray
+        }
+    }
 
     return [pscustomobject]@{
         SealPath       = $sealPath
         KeyMode        = $mode
+        KdfHash        = $kdfHash
         ManifestSha256 = $seal.manifestSha256
         SealedAt       = $seal.sealedAt
     }
@@ -688,6 +849,10 @@ function Test-OFCaseSeal {
         return $result
     }
 
+    if (-not $Passphrase -and $seal.keyMode -eq 'pbkdf2' -and $env:OPENFORENSIC_SEAL_PASSPHRASE) {
+        $Passphrase = ConvertTo-SecureString -String $env:OPENFORENSIC_SEAL_PASSPHRASE -AsPlainText -Force
+    }
+
     $key = $null
     try {
         $salt = [Convert]::FromBase64String($seal.salt)
@@ -696,12 +861,16 @@ function Test-OFCaseSeal {
                 $result.Message = 'Segel memakai passphrase. Berikan -Passphrase untuk verifikasi.'
                 return $result
             }
-            $plain = [System.Runtime.InteropServices.Marshal]::PtrToStringUni(
-                [System.Runtime.InteropServices.Marshal]::SecureStringToGlobalAllocUnicode($Passphrase))
+            $plain = ConvertFrom-OFIntSecureString -Secure $Passphrase
             $iterations = if ($seal.iterations) { [int]$seal.iterations } else { $script:IntPbkdf2Iterations }
-            $derive = New-Object System.Security.Cryptography.Rfc2898DeriveBytes($plain, $salt, $iterations)
-            try { $key = $derive.GetBytes(32) } finally { $derive.Dispose() }
+            $kdfHash = 'sha1'
+            if (($seal.PSObject.Properties.Name -contains 'kdfHash') -and $seal.kdfHash) { $kdfHash = [string]$seal.kdfHash }
+            $key = Get-OFIntDerivedKey -Passphrase $plain -Salt $salt -Iterations $iterations -HashName $kdfHash
         } else {
+            if (-not (Test-OFIntWindows)) {
+                $result.Message = 'Segel dibuat dengan DPAPI di Windows dan tidak dapat diverifikasi di platform ini. Segel ulang dengan -Passphrase agar portabel.'
+                return $result
+            }
             $protectedBytes = [Convert]::FromBase64String($seal.protectedKey)
             $key = [System.Security.Cryptography.ProtectedData]::Unprotect(
                 $protectedBytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
@@ -749,20 +918,20 @@ function Get-OFIntegrityStatus {
             $path = if ((Test-OFIntProperty -InputObject $evidence -Name 'workingPath') -and $evidence.workingPath) { $evidence.workingPath } else { $evidence.originalPath }
             $present = [bool]($path -and (Test-Path -LiteralPath $path))
             $currentHash = $null
-            $matches = $null
+            $hashMatches = $null
             if ($present) {
                 $currentHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToUpperInvariant()
-                if ($evidence.sha256) { $matches = ($currentHash -eq $evidence.sha256.ToUpperInvariant()) }
+                if ($evidence.sha256) { $hashMatches = ($currentHash -eq $evidence.sha256.ToUpperInvariant()) }
             }
             [void]$evidenceChecks.Add([pscustomobject]@{
-                EvidenceId    = $evidence.id
-                Name          = $evidence.name
-                Path          = $path
-                Present       = $present
-                RecordedHash  = $evidence.sha256
-                CurrentHash   = $currentHash
-                HashMatches   = $matches
-                Allowlisted   = [bool]($evidence.sha256 -and (Test-OFHashAllowlist -Sha256 $evidence.sha256))
+                EvidenceId   = $evidence.id
+                Name         = $evidence.name
+                Path         = $path
+                Present      = $present
+                RecordedHash = $evidence.sha256
+                CurrentHash  = $currentHash
+                HashMatches  = $hashMatches
+                Allowlisted  = [bool]($evidence.sha256 -and (Test-OFHashAllowlist -Sha256 $evidence.sha256))
             })
         }
     }
@@ -784,6 +953,7 @@ function Get-OFIntegrityStatus {
         Manifest        = $manifest
         Seal            = $seal
         ToolVersions    = $toolVersions
+        StorageMode     = (Get-OFIntStorageMode)
         OverallOk       = ($tampered.Count -eq 0 -and $missing.Count -eq 0 -and ($manifest.Present -eq $false -or $manifest.Ok) -and ($seal.Present -eq $false -or $seal.Valid))
         CheckedAt       = (Get-Date).ToString('o')
     }
@@ -814,8 +984,14 @@ function Format-OFIntegritySummary {
     }
     if ($Status.Seal.Present) {
         [void]$lines.Add(('- Segel kasus: mode {0}, disegel {1} oleh {2}, {3}' -f $Status.Seal.KeyMode, $Status.Seal.SealedAt, $Status.Seal.SealedBy, $(if ($Status.Seal.Valid) { 'VALID' } else { 'TIDAK VALID' })))
+        if (-not $Status.Seal.Valid -and $Status.Seal.Message) {
+            [void]$lines.Add(('  - Catatan verifikasi: {0}' -f $Status.Seal.Message))
+        }
     } else {
         [void]$lines.Add('- Segel kasus: belum disegel')
+    }
+    if ($Status.PSObject.Properties.Name -contains 'StorageMode' -and $Status.StorageMode) {
+        [void]$lines.Add(('- Mode penyimpanan kunci pada platform ini: {0}' -f $Status.StorageMode))
     }
     if (@($Status.ToolVersions).Count -gt 0) {
         [void]$lines.Add('- Versi tool yang dipakai:')
@@ -835,6 +1011,9 @@ function Invoke-OFCaseSealWorkflow {
     <#
     .SYNOPSIS
         Langkah penutup kasus: catat versi tool, buat manifest, segel, lalu verifikasi.
+    .DESCRIPTION
+        Di Linux/macOS tanpa passphrase, tahap segel dilewati dengan peringatan
+        (manifest tetap dibuat) sehingga penutupan kasus tidak gagal total.
     #>
     [CmdletBinding()]
     param(
@@ -846,13 +1025,26 @@ function Invoke-OFCaseSealWorkflow {
     if (-not $Quiet) { Write-Host '  Menutup kasus (versi tool -> manifest -> segel)' -ForegroundColor Cyan }
     Update-OFCaseToolVersions -Case $Case -Quiet:$Quiet | Out-Null
     New-OFCaseManifest -Case $Case -Quiet:$Quiet | Out-Null
-    if ($Passphrase) {
-        New-OFCaseSeal -Case $Case -Passphrase $Passphrase -Quiet:$Quiet | Out-Null
-        $status = Get-OFIntegrityStatus -Case $Case -Passphrase $Passphrase
-    } else {
-        New-OFCaseSeal -Case $Case -Quiet:$Quiet | Out-Null
-        $status = Get-OFIntegrityStatus -Case $Case
+
+    $storageMode = Get-OFIntStorageMode
+    $canSeal = [bool]($Passphrase -or $storageMode -eq 'dpapi' -or $env:OPENFORENSIC_SEAL_PASSPHRASE)
+
+    if ($canSeal) {
+        try {
+            if ($Passphrase) {
+                New-OFCaseSeal -Case $Case -Passphrase $Passphrase -Quiet:$Quiet | Out-Null
+            } else {
+                New-OFCaseSeal -Case $Case -Quiet:$Quiet | Out-Null
+            }
+        } catch {
+            Write-Warning "Segel gagal dibuat: $($_.Exception.Message)"
+        }
+    } elseif (-not $Quiet) {
+        Write-Host '  [!] Segel dilewati: platform ini butuh passphrase (-Passphrase atau OPENFORENSIC_SEAL_PASSPHRASE).' -ForegroundColor Yellow
     }
+
+    $status = if ($Passphrase) { Get-OFIntegrityStatus -Case $Case -Passphrase $Passphrase } else { Get-OFIntegrityStatus -Case $Case }
+
     if (-not $Quiet) {
         if ($status.OverallOk) {
             Write-Host '  Integritas kasus: OK' -ForegroundColor Green
