@@ -10,14 +10,18 @@
 
     Semua state kasus disimpan di cases/<CaseId>/case.json sehingga pemeriksaan
     dapat dilanjutkan kapan saja dan report selalu dapat dibangun ulang.
+
+    Modul ini lintas platform: identitas pemeriksa dan nama host dibaca lewat API .NET
+    (bukan %USERNAME%/%COMPUTERNAME% yang hanya ada di Windows), dan direktori kasus
+    mengikuti $env:OPENFORENSIC_HOME bila diset (penting untuk Docker dan volume host).
 #>
 
 Set-StrictMode -Version Latest
 
-$script:CaseRoot          = Join-Path $PSScriptRoot 'cases'
+$script:CaseRootDefault   = Join-Path $PSScriptRoot 'cases'
 $script:CaseSchemaVersion = 1
 $script:WfUtf8            = New-Object System.Text.UTF8Encoding($false)
-$script:WfToolkitVersion  = 'OpenForensic 0.3.0'
+$script:WfToolkitVersion  = 'OpenForensic 0.5.0'
 $script:MaxArtifactPerType = 25
 $script:MaxLogLines        = 20000
 
@@ -45,7 +49,7 @@ $script:ArtifactDetectors = @(
     @{ Name = 'registry_autorun'; Category = 'persistence'; Severity = 'high';   Pattern = '(?i)(?:HKEY_[A-Z_]+|HKLM|HKCU|HKU)[\\][^\s<>"'']*Run[^\s<>"'']*' }
     @{ Name = 'service_create';  Category = 'persistence'; Severity = 'high';    Pattern = '(?i)\bsc(?:\.exe)?\s+(?:create|config)\b' }
     @{ Name = 'scheduled_task';  Category = 'persistence'; Severity = 'high';    Pattern = '(?i)\b(?:schtasks(?:\.exe)?|Register-ScheduledTask)\b' }
-    @{ Name = 'powershell_encoded'; Category = 'execution'; Severity = 'critical'; Pattern = '(?i)(?:-enc(?:oded)?command|-ec|frombase64string)\b' }
+    @{ Name = 'powershell_encoded'; Category = 'execution'; Severity = 'critical'; Pattern = '(?i)(?:-enc(?:oded)?command|-enc\s+[A-Za-z0-9+/=]{12,}|-ec\s+[A-Za-z0-9+/=]{12,}|frombase64string)' }
     @{ Name = 'powershell_download'; Category = 'execution'; Severity = 'critical'; Pattern = '(?i)(?:downloadstring|downloadfile|invoke-webrequest|invoke-restmethod|net\.webclient|start-bitstransfer)' }
     @{ Name = 'lolbin';          Category = 'execution';  Severity = 'high';     Pattern = '(?i)\b(?:certutil|bitsadmin|mshta|regsvr32|rundll32|wmic|cscript|wscript|msiexec|installutil|odbcconf)(?:\.exe)?\b' }
     @{ Name = 'vba_autoexec';    Category = 'macro';      Severity = 'critical'; Pattern = '(?i)\b(?:AutoOpen|AutoExec|Auto_Open|Auto_Close|Document_Open|Workbook_Open|DocumentOpen)\b' }
@@ -69,6 +73,54 @@ $script:ArtifactDetectors = @(
 )
 
 #region Helper privat
+
+function Get-OFActorName {
+    <# Nama pengguna lintas platform (Windows, Linux, macOS). #>
+    if ($env:OPENFORENSIC_EXAMINER) { return [string]$env:OPENFORENSIC_EXAMINER }
+    try {
+        $name = [string][System.Environment]::UserName
+        if ($name) { return $name }
+    } catch {
+        Write-Verbose 'Nama pengguna tidak dapat dibaca dari runtime.'
+    }
+    if ($env:USERNAME) { return [string]$env:USERNAME }
+    if ($env:USER) { return [string]$env:USER }
+    return 'unknown'
+}
+
+function Get-OFHostName {
+    <# Nama host lintas platform. #>
+    try {
+        $name = [string][System.Environment]::MachineName
+        if ($name) { return $name }
+    } catch {
+        Write-Verbose 'Nama host tidak dapat dibaca dari runtime.'
+    }
+    if ($env:COMPUTERNAME) { return [string]$env:COMPUTERNAME }
+    if ($env:HOSTNAME) { return [string]$env:HOSTNAME }
+    return 'unknown'
+}
+
+function Get-OFExaminationEnvironment {
+    <# Ringkasan lingkungan pemeriksaan untuk disimpan di case.json. #>
+    $osName = 'unknown'
+    $architecture = 'unknown'
+    $container = $false
+    if (Get-Command -Name 'Get-OFPlatform' -ErrorAction SilentlyContinue) {
+        $platform = Get-OFPlatform
+        $osName = [string]$platform.Os
+        $architecture = [string]$platform.Architecture
+        $container = [bool]$platform.IsContainer
+    }
+    return [pscustomobject]@{
+        os           = $osName
+        architecture = $architecture
+        psVersion    = [string]$PSVersionTable.PSVersion
+        psEdition    = [string]$PSVersionTable.PSEdition
+        container    = $container
+        host         = (Get-OFHostName)
+    }
+}
 
 function ConvertTo-OFList {
     param($Value)
@@ -115,8 +167,8 @@ function Add-OFCustody {
     )
     [void]$Case.chainOfCustody.Add([pscustomobject]@{
         at     = (Get-Date).ToString('o')
-        actor  = $env:USERNAME
-        host   = $env:COMPUTERNAME
+        actor  = (Get-OFActorName)
+        host   = (Get-OFHostName)
         action = $Action
         detail = $Detail
     })
@@ -147,13 +199,32 @@ function Get-OFEvidenceKind {
 #endregion
 
 function Get-OFCaseRoot {
+    <#
+        .SYNOPSIS
+        Direktori induk seluruh kasus.
+
+        .DESCRIPTION
+        Bila $env:OPENFORENSIC_HOME diset (mis. di dalam kontainer atau saat data kasus
+        harus berada di volume terpisah), direktori kasus mengikuti lokasi tersebut.
+        Bila tidak, dipakai folder 'cases' di samping modul.
+    #>
     [CmdletBinding()]
     [OutputType([string])]
     param()
-    if (-not (Test-Path -LiteralPath $script:CaseRoot)) {
-        New-Item -ItemType Directory -Path $script:CaseRoot -Force | Out-Null
+
+    $root = $script:CaseRootDefault
+    if ($env:OPENFORENSIC_HOME) {
+        if (Get-Command -Name 'Get-OFDataRoot' -ErrorAction SilentlyContinue) {
+            $root = Join-Path (Get-OFDataRoot) 'cases'
+        } else {
+            $root = Join-Path $env:OPENFORENSIC_HOME 'cases'
+        }
     }
-    return $script:CaseRoot
+
+    if (-not (Test-Path -LiteralPath $root)) {
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+    }
+    return [string]$root
 }
 
 function New-OFCase {
@@ -161,11 +232,13 @@ function New-OFCase {
     [OutputType([psobject])]
     param(
         [Parameter(Mandatory)][string]$Name,
-        [string]$Examiner = $env:USERNAME,
+        [string]$Examiner = '',
         [string]$Description = '',
         [string]$Reference = '',
         [ValidateSet('public', 'internal', 'confidential', 'restricted')][string]$Classification = 'internal'
     )
+
+    if ([string]::IsNullOrWhiteSpace($Examiner)) { $Examiner = Get-OFActorName }
 
     $root = Get-OFCaseRoot
     $slug = ($Name -replace '[^\w\-]', '_')
@@ -190,6 +263,7 @@ function New-OFCase {
         examiner       = $Examiner
         status         = 'open'
         toolkit        = $script:WfToolkitVersion
+        environment    = (Get-OFExaminationEnvironment)
         createdAt      = (Get-Date).ToString('o')
         updatedAt      = (Get-Date).ToString('o')
         caseDir        = $caseDir
@@ -343,7 +417,7 @@ function Add-OFCaseEvidence {
         source         = $Source
         modifiedAt     = $item.LastWriteTime.ToString('o')
         addedAt        = (Get-Date).ToString('o')
-        addedBy        = $env:USERNAME
+        addedBy        = (Get-OFActorName)
         integrityVerified = $null
         analyses       = (New-Object System.Collections.ArrayList)
     }
@@ -416,7 +490,7 @@ function Add-OFCaseFinding {
         origin      = $Origin
         status      = 'open'
         createdAt   = (Get-Date).ToString('o')
-        createdBy   = $env:USERNAME
+        createdBy   = (Get-OFActorName)
     }
 
     [void]$Case.findings.Add($finding)
@@ -576,7 +650,11 @@ function Invoke-OFEvidenceAnalysis {
 
     foreach ($tool in $tools) {
         if (-not $tool.Available) {
-            Write-Host "[-] Lewati $($tool.Name): belum terpasang. $($tool.InstallHint)" -ForegroundColor DarkYellow
+            $hint = [string]$tool.InstallHint
+            if (Get-Command -Name 'Get-OFInstallHint' -ErrorAction SilentlyContinue) {
+                $hint = Get-OFInstallHint -ToolId $tool.Id -FallbackHint $hint
+            }
+            Write-Host "[-] Lewati $($tool.Name): belum terpasang. $hint" -ForegroundColor DarkYellow
             continue
         }
 
@@ -736,7 +814,8 @@ function Export-OFCaseReport {
     param(
         [Parameter(Mandatory)]$Case,
         [ValidateSet('Markdown', 'Html', 'Both')][string]$Format = 'Both',
-        [switch]$IncludeArtifacts
+        [switch]$IncludeArtifacts,
+        [switch]$IncludePlatformMatrix
     )
 
     $summary = Get-OFCaseSummary -Case $Case
@@ -761,6 +840,10 @@ function Export-OFCaseReport {
     Add-Line "| Dibuat | $($Case.createdAt) |"
     Add-Line "| Laporan dibuat | $(Get-Date -Format o) |"
     Add-Line "| Toolkit | $($Case.toolkit) |"
+    $environment = Get-OFProperty $Case 'environment' $null
+    if ($environment) {
+        Add-Line "| Lingkungan kasus dibuat | $(Get-OFProperty $environment 'os' 'unknown') $(Get-OFProperty $environment 'architecture' '') / PowerShell $(Get-OFProperty $environment 'psVersion' '') |"
+    }
     Add-Line
     Add-Line '## 1. Ringkasan Eksekutif'
     Add-Line
@@ -813,8 +896,17 @@ function Export-OFCaseReport {
         Add-Line
     }
 
-    Add-Line '## 3. Metode dan Tool yang Digunakan'
+    Add-Line '## 3. Lingkungan Pemeriksaan dan Tool'
     Add-Line
+    if (Get-Command -Name 'Format-OFPlatformSummary' -ErrorAction SilentlyContinue) {
+        Add-Line (Format-OFPlatformSummary -IncludeMatrix:$IncludePlatformMatrix)
+        Add-Line
+        Add-Line '> Lingkungan di atas adalah lingkungan saat laporan dibuat. Lingkungan saat kasus dibuat tercatat di tabel identitas kasus.'
+        Add-Line
+    } else {
+        Add-Line "- PowerShell: $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))"
+        Add-Line
+    }
     Add-Line '| Bukti | Tool | Fase | Exit code | Durasi (s) | Baris output | Log |'
     Add-Line '|---|---|---|---|---|---|---|'
     foreach ($evidence in $Case.evidence) {
@@ -908,6 +1000,7 @@ function Export-OFCaseReport {
     Add-Line '- Deteksi berbasis pola dapat menghasilkan positif palsu; setiap temuan wajib diverifikasi pada log tool.'
     Add-Line '- Hash bukti dicatat sebelum dan sesudah analisis untuk membuktikan bukti tidak berubah.'
     Add-Line '- Semua eksekusi tool dilakukan dengan argumen terisolasi (tanpa evaluasi shell).'
+    Add-Line '- Ketersediaan tool berbeda antar sistem operasi; lihat bagian Lingkungan Pemeriksaan untuk keterbatasan platform.'
     Add-Line
     Add-Line "_Dokumen ini dihasilkan otomatis oleh $($Case.toolkit) pada $(Get-Date -Format o)._"
 
@@ -956,7 +1049,7 @@ function Invoke-OFWorkflow {
     param(
         [Parameter(Mandatory)][string[]]$Path,
         [string]$CaseName = '',
-        [string]$Examiner = $env:USERNAME,
+        [string]$Examiner = '',
         [string]$Description = '',
         [string]$Reference = '',
         [ValidateSet('public', 'internal', 'confidential', 'restricted')][string]$Classification = 'internal',
@@ -969,6 +1062,8 @@ function Invoke-OFWorkflow {
     )
 
     Initialize-OFWorkspace
+
+    if ([string]::IsNullOrWhiteSpace($Examiner)) { $Examiner = Get-OFActorName }
 
     if (-not $Case) {
         if ([string]::IsNullOrWhiteSpace($CaseName)) {
