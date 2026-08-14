@@ -1,33 +1,40 @@
-# Binary & tool hasil unduhan
+# Binari tool pihak ketiga
 bin/
 volatility3/
-*.exe
-*.dll
 
-# Report & artefak analisis (bisa memuat data bukti)
+# Hasil analisis & data kasus (JANGAN pernah di-commit: memuat data bukti)
 reports/
-*.report.txt
+cases/
+artifacts/
+recovered/
+hayabusa_timeline.csv
+*_report.txt
+*_report.json
 *.ai.md
 
-# Secret
+# Rahasia & konfigurasi lokal
 .ai_config
+.ai_settings.json
 .env
 *.key
+*.pem
 
-# Sampel bukti - jangan pernah di-commit
-samples/
-evidence/
-*.dmp
-*.raw
-*.vmem
-*.mem
-*.pcap
-*.pcapng
+# Rule/wordlist besar yang diunduh manual
+rules/
+wordlists/
 
-# PowerShell / editor
-TestResults*.xml
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Windows / editor
+Thumbs.db
+Desktop.ini
+*.lnk
 .vscode/
 .idea/
-*.swp
-Thumbs.db
-desktop.ini
+
+# Hasil test
+TestResults.xml
