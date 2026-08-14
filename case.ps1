@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    CLI alur kerja kasus OpenForensic (end-to-end, non-interaktif).
+    CLI alur kerja kasus OpenForensic (end-to-end, non-interaktif, lintas platform).
 
 .DESCRIPTION
     Satu perintah untuk seluruh siklus: buat kasus, daftarkan bukti (hash + chain of
@@ -9,25 +9,29 @@
     ternormalisasi + pemetaan MITRE ATT&CK, analisis AI opsional, ekspor report /
     timeline / IOC, lalu segel kasus secara kriptografis.
 
-.EXAMPLE
-    .\case.ps1 -Path .\bukti\dump.raw -CaseName "Insiden Workstation A" -Complete
+    Berjalan di Windows (PowerShell 5.1 atau 7) serta Linux dan macOS (PowerShell 7).
+    Nama pemeriksa diambil otomatis dari lingkungan bila -Examiner tidak diberikan.
 
 .EXAMPLE
-    .\case.ps1 -Path .\bukti\*.docx -CaseName "Phishing Batch" -CopyEvidence -Complete -UseAi -Model lokal
+    ./case.ps1 -Path ./bukti/dump.raw -CaseName "Insiden Workstation A" -Complete
 
 .EXAMPLE
-    .\case.ps1 -CaseId CASE-20260814-231500-Insiden -Timeline -ExportIoc Csv -Seal
-    .\case.ps1 -CaseId CASE-20260814-231500-Insiden -VerifyIntegrity
+    ./case.ps1 -Path ./bukti/*.docx -CaseName "Phishing Batch" -CopyEvidence -Complete -UseAi -Model lokal
 
 .EXAMPLE
-    .\case.ps1 -ListModels
-    .\case.ps1 -TestModels
+    ./case.ps1 -CaseId CASE-20260814-231500-Insiden -Timeline -ExportIoc Csv -Seal
+    ./case.ps1 -CaseId CASE-20260814-231500-Insiden -VerifyIntegrity
+
+.EXAMPLE
+    ./case.ps1 -ListModels
+    ./case.ps1 -TestModels
 #>
 [CmdletBinding(DefaultParameterSetName = 'Run')]
 param(
     [Parameter(ParameterSetName = 'Run', Position = 0)][string[]]$Path = @(),
     [Parameter(ParameterSetName = 'Run')][string]$CaseName = '',
-    [Parameter(ParameterSetName = 'Run')][string]$Examiner = $env:USERNAME,
+    # Kosong berarti: pakai deteksi otomatis lintas platform dari modul workflow.
+    [Parameter(ParameterSetName = 'Run')][string]$Examiner = '',
     [Parameter(ParameterSetName = 'Run')][string]$Description = '',
     [Parameter(ParameterSetName = 'Run')][string]$Reference = '',
     [Parameter(ParameterSetName = 'Run')]
@@ -61,6 +65,8 @@ param(
 
     [Parameter(ParameterSetName = 'List', Mandatory)][switch]$List,
 
+    [Parameter(ParameterSetName = 'Env', Mandatory)][switch]$ShowEnvironment,
+
     [Parameter(ParameterSetName = 'Models', Mandatory)][switch]$ListModels,
     [Parameter(ParameterSetName = 'ModelsTest', Mandatory)][switch]$TestModels
 )
@@ -83,10 +89,27 @@ function Invoke-OFCliSeal {
 }
 
 try {
+    # Peringatan dini bila lingkungan tidak memenuhi syarat minimum.
+    if (Get-Command Test-OFPlatformCompatibility -ErrorAction SilentlyContinue) {
+        $compat = Test-OFPlatformCompatibility
+        if ($compat -and -not $compat.Supported -and -not $Quiet) {
+            Write-Host "[!] Lingkungan belum sepenuhnya didukung: $($compat.Message)" -ForegroundColor Yellow
+        }
+    }
+
     # Aktifkan model AI pilihan pengguna sebelum aksi apa pun yang memakai AI.
     if ($Model) { Use-OFAiModel -Name $Model -Quiet:$Quiet | Out-Null }
 
     switch ($PSCmdlet.ParameterSetName) {
+        'Env' {
+            if (Get-Command Format-OFPlatformSummary -ErrorAction SilentlyContinue) {
+                Write-Host (Format-OFPlatformSummary -IncludeMatrix) | Out-Host
+            } else {
+                Get-OFPlatform | Format-List | Out-Host
+            }
+            exit 0
+        }
+
         'Models' {
             $models = @(Get-OFAiModelList)
             if ($models.Count -eq 0) {
@@ -113,7 +136,7 @@ try {
         'List' {
             $cases = @(Get-OFCaseList)
             if ($cases.Count -eq 0) {
-                Write-Host '[i] Belum ada kasus. Buat dengan: .\case.ps1 -Path <file> -CaseName "..."' -ForegroundColor DarkGray
+                Write-Host '[i] Belum ada kasus. Buat dengan: ./case.ps1 -Path <file> -CaseName "..."' -ForegroundColor DarkGray
             } else {
                 $cases | Format-Table CaseId, Name, Examiner, Status, Evidence, Findings, UpdatedAt -AutoSize | Out-Host
             }
@@ -154,7 +177,7 @@ try {
             if ($DeepAi) { Invoke-OFAiDeepAnalysis -Case $case | Out-Null }
             elseif ($AiAnalyze) { Invoke-OFAiCaseAnalysis -Case $case | Out-Null }
             if ($Assistant) { Start-OFAiAssistant -Case $case }
-            if ($Report) { Export-OFCaseReport -Case $case -Format Both -IncludeArtifacts | Out-Null }
+            if ($Report) { Export-OFCaseReport -Case $case -Format Both -IncludeArtifacts -IncludePlatformMatrix | Out-Null }
             if ($ExportIoc) { Export-OFCaseIoc -Case $case -Format $ExportIoc -Quiet:$Quiet | Out-Null }
             if ($Seal) { Invoke-OFCliSeal -Case $case -Passphrase $SealPassphrase -Quiet:$Quiet | Out-Null }
 
@@ -179,11 +202,11 @@ try {
         default {
             if ($Path.Count -eq 0) {
                 Write-Host 'Pemakaian:' -ForegroundColor Cyan
-                Write-Host '  .\case.ps1 -Path <file...> [-CaseName "..."] [-CopyEvidence] [-AllTools] [-Complete] [-UseAi|-DeepAi] [-Model <nama>] [-Seal]' -ForegroundColor Cyan
-                Write-Host '  .\case.ps1 -List' -ForegroundColor Cyan
-                Write-Host '  .\case.ps1 -CaseId <id> [-AddEvidence <file...>] [-Analyze] [-Timeline] [-ExportTimeline Csv]' -ForegroundColor Cyan
+                Write-Host '  ./case.ps1 -Path <file...> [-CaseName "..."] [-CopyEvidence] [-AllTools] [-Complete] [-UseAi|-DeepAi] [-Model <nama>] [-Seal]' -ForegroundColor Cyan
+                Write-Host '  ./case.ps1 -List' -ForegroundColor Cyan
+                Write-Host '  ./case.ps1 -CaseId <id> [-AddEvidence <file...>] [-Analyze] [-Timeline] [-ExportTimeline Csv]' -ForegroundColor Cyan
                 Write-Host '             [-DeepAi] [-Report] [-ExportIoc Csv|Json|Stix|Misp] [-Seal] [-VerifyIntegrity] [-CompleteExisting]' -ForegroundColor Cyan
-                Write-Host '  .\case.ps1 -ListModels | -TestModels' -ForegroundColor Cyan
+                Write-Host '  ./case.ps1 -ListModels | -TestModels | -ShowEnvironment' -ForegroundColor Cyan
                 exit 2
             }
 
@@ -198,9 +221,24 @@ try {
             }
             if ($resolvedPaths.Count -eq 0) { exit 2 }
 
-            $result = Invoke-OFWorkflow -Path @($resolvedPaths) -CaseName $CaseName -Examiner $Examiner `
-                -Description $Description -Reference $Reference -Classification $Classification `
-                -CopyEvidence:$CopyEvidence -AllTools:$AllTools -UseAi:$UseAi -NoReport:$NoReport -Quiet:$Quiet
+            # -Examiner sengaja hanya dikirim bila diisi, agar modul workflow yang
+            # menentukan nama pemeriksa secara lintas platform (OPENFORENSIC_EXAMINER,
+            # lalu identitas pengguna sistem lewat API .NET).
+            $workflowArgs = @{
+                Path           = @($resolvedPaths)
+                CaseName       = $CaseName
+                Description    = $Description
+                Reference      = $Reference
+                Classification = $Classification
+                CopyEvidence   = $CopyEvidence
+                AllTools       = $AllTools
+                UseAi          = $UseAi
+                NoReport       = $NoReport
+                Quiet          = $Quiet
+            }
+            if ($Examiner -and $Examiner.Trim()) { $workflowArgs['Examiner'] = $Examiner.Trim() }
+
+            $result = Invoke-OFWorkflow @workflowArgs
 
             $case = $result.Case
 
