@@ -1,8 +1,10 @@
 #Requires -Version 5.1
 <#
     Pester tests untuk modul OpenForensic.
-    Semua test bersifat offline: tidak ada panggilan jaringan dan tidak ada tool eksternal
-    selain cmd.exe bawaan Windows.
+    Semua test bersifat offline: tidak ada panggilan jaringan.
+    Proses eksternal yang dipakai hanya shell bawaan OS:
+      Windows : cmd.exe (dari %ComSpec%)
+      Unix    : /bin/echo dan /bin/sh
 #>
 
 BeforeAll {
@@ -11,6 +13,32 @@ BeforeAll {
 
     $script:Sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ("of_tests_" + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $script:Sandbox -Force | Out-Null
+
+    $script:OnWindows = [bool](Test-OFWindows)
+
+    # Perintah eksternal portabel untuk menguji Invoke-OFTool.
+    if ($script:OnWindows) {
+        $script:ShellPath = $env:ComSpec
+        if (-not $script:ShellPath) { $script:ShellPath = 'cmd.exe' }
+        $script:EchoPath = $script:ShellPath
+        $script:EchoPrefix = @('/c', 'echo')
+        $script:ExitPath = $script:ShellPath
+        $script:ExitPrefix = @('/c', 'exit')
+        $script:ExitArgs = @('3')
+    } else {
+        $script:ShellPath = '/bin/sh'
+        $script:EchoPath = if (Test-Path -LiteralPath '/bin/echo') { '/bin/echo' } else { '/usr/bin/echo' }
+        $script:EchoPrefix = @()
+        $script:ExitPath = $script:ShellPath
+        $script:ExitPrefix = @('-c')
+        $script:ExitArgs = @('exit 3')
+    }
+
+    function Invoke-TestEcho {
+        param([Parameter(Mandatory)][string]$Text)
+        $arguments = @($script:EchoPrefix) + @($Text)
+        return Invoke-OFTool -ToolPath $script:EchoPath -Arguments $arguments -Quiet
+    }
 
     function New-TestBinaryFile {
         param([string]$Name, [byte[]]$Bytes)
@@ -74,8 +102,22 @@ Describe 'Katalog tools.json' {
         }
     }
 
-    It 'dapat me-resolve setiap tool tanpa error' {
+    It 'dapat me-resolve setiap tool tanpa error di OS apa pun' {
         foreach ($tool in $script:Catalog) {
+            { Resolve-OFTool -Id $tool.id -Catalog $script:Catalog } | Should -Not -Throw
+        }
+    }
+
+    It 'menghasilkan objek resolusi dengan field lintas platform' {
+        $resolved = Resolve-OFTool -Id $script:Catalog[0].id -Catalog $script:Catalog
+        $resolved.PSObject.Properties.Name | Should -Contain 'ResolvedFrom'
+        $resolved.ResolvedFrom | Should -BeIn @('builtin', 'local', 'path', 'none')
+        $resolved.PSObject.Properties.Name | Should -Contain 'Available'
+    }
+
+    It 'memakai executableByOs bila tersedia tanpa error' {
+        $withOverride = @($script:Catalog | Where-Object { $_.PSObject.Properties.Name -contains 'executableByOs' })
+        foreach ($tool in $withOverride) {
             { Resolve-OFTool -Id $tool.id -Catalog $script:Catalog } | Should -Not -Throw
         }
     }
@@ -161,27 +203,42 @@ Describe 'Invoke-OFStrings' {
 
 Describe 'Invoke-OFTool' {
     It 'menjalankan proses dan menangkap output' {
-        $result = Invoke-OFTool -ToolPath $env:ComSpec -Arguments @('/c', 'echo', 'openforensic') -Quiet
+        $result = Invoke-TestEcho -Text 'openforensic'
         ($result.Output -join ' ') | Should -Match 'openforensic'
         $result.ExitCode | Should -Be 0
         $result.Success | Should -BeTrue
     }
 
     It 'menangkap exit code bukan nol' {
-        $result = Invoke-OFTool -ToolPath $env:ComSpec -Arguments @('/c', 'exit', '3') -Quiet
+        $arguments = @($script:ExitPrefix) + @($script:ExitArgs)
+        $result = Invoke-OFTool -ToolPath $script:ExitPath -Arguments $arguments -Quiet
         $result.ExitCode | Should -Be 3
         $result.Success | Should -BeFalse
     }
 
-    It 'tidak mengevaluasi metakarakter pada argumen (anti command injection)' {
+    It 'tidak mengevaluasi metakarakter shell pada argumen (anti command injection)' {
+        # Payload berisi metakarakter shell. Karena argumen dikirim sebagai array,
+        # payload harus muncul utuh sebagai SATU baris output dan tidak boleh
+        # dieksekusi sebagai perintah kedua.
         $payload = 'a & echo INJECTED'
-        $result = Invoke-OFTool -ToolPath $env:ComSpec -Arguments @('/c', 'echo', $payload) -Quiet
-        ($result.Output -join ' ') | Should -Not -Match 'INJECTED\s*$'
-        ($result.Output -join ' ') | Should -Match 'echo INJECTED'
+        $result = Invoke-TestEcho -Text $payload
+        $lines = @($result.Output | Where-Object { $_ -match '\S' })
+        $lines.Count | Should -Be 1 -Because 'payload tidak boleh dipecah menjadi dua perintah'
+        $lines[0] | Should -Match 'a\s*&\s*echo INJECTED'
+    }
+
+    It 'tidak mengevaluasi substitusi perintah gaya Unix' -Skip:$script:OnWindows {
+        $payload = 'x $(id) `id` ${HOME}'
+        $result = Invoke-TestEcho -Text $payload
+        $joined = ($result.Output -join ' ')
+        $joined | Should -Match '\$\(id\)'
+        $joined | Should -Match '\$\{HOME\}'
+        $joined | Should -Not -Match 'uid='
     }
 
     It 'tidak melempar error saat executable tidak ada' {
-        $result = Invoke-OFTool -ToolPath (Join-Path $script:Sandbox 'tidak_ada.exe') -Arguments @() -Quiet
+        $missing = Join-Path $script:Sandbox 'tidak_ada_executable'
+        $result = Invoke-OFTool -ToolPath $missing -Arguments @() -Quiet
         $result.Success | Should -BeFalse
         $result.Error | Should -Not -BeNullOrEmpty
     }
@@ -207,6 +264,13 @@ Describe 'Report' {
         $content | Should -Match $script:Report.Hashes.SHA256
     }
 
+    It 'mencatat lingkungan pemeriksaan pada header report' {
+        $content = Get-Content -LiteralPath $script:Report.TextPath -Raw
+        $content | Should -Match 'Lingkungan'
+        $content | Should -Match 'Toolkit'
+        $content | Should -Not -Match 'Analis      : \s*$'
+    }
+
     It 'mencatat entry analisis' {
         Add-OFReportEntry -Report $script:Report -Command 'dummy.exe' -Arguments @('-x') -Output @('baris output') -ExitCode 0
         $script:Report.Entries.Count | Should -Be 1
@@ -220,6 +284,39 @@ Describe 'Report' {
         $payload.integrity.verified | Should -BeTrue
         $payload.target.sha256 | Should -Be $script:Report.Hashes.SHA256
         $payload.entries.Count | Should -Be 1
+        $payload.analyst | Should -Not -BeNullOrEmpty
+        $payload.workstation | Should -Not -BeNullOrEmpty
+    }
+}
+
+Describe 'Select-OFTargetFile' {
+    It 'mengembalikan path yang diberikan tanpa dialog GUI' {
+        $path = Join-Path $script:Sandbox 'abc.txt'
+        (Select-OFTargetFile -Path $path) | Should -Be (Resolve-Path -LiteralPath $path).Path
+    }
+
+    It 'memperingatkan dan mengembalikan null untuk path yang tidak ada' {
+        $result = Select-OFTargetFile -Path (Join-Path $script:Sandbox 'tidak_ada_file.bin') -WarningAction SilentlyContinue
+        $result | Should -BeNullOrEmpty
+    }
+
+    It 'tidak memerlukan System.Windows.Forms saat Path diberikan' -Skip:$script:OnWindows {
+        $path = Join-Path $script:Sandbox 'abc.txt'
+        { Select-OFTargetFile -Path $path } | Should -Not -Throw
+    }
+}
+
+Describe 'Penyimpanan API key lintas platform' {
+    It 'melaporkan mode penyimpanan yang sesuai platform' {
+        $mode = Get-OFSecureStorageMode
+        $mode | Should -BeIn @('dpapi', 'pbkdf2')
+        if (-not $script:OnWindows) { $mode | Should -Be 'pbkdf2' }
+    }
+
+    It 'mengembalikan path key store yang absolut' {
+        $paths = Get-OFPath
+        $paths.KeyStore | Should -Not -BeNullOrEmpty
+        [System.IO.Path]::IsPathRooted($paths.KeyStore) | Should -BeTrue
     }
 }
 
@@ -235,6 +332,26 @@ Describe 'Kebijakan keamanan kode' {
     It 'tidak menyimpan API key sebagai plaintext lewat Set-Content langsung' {
         $module = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'OpenForensic.psm1') -Raw
         $module | Should -Match 'ConvertFrom-SecureString'
+    }
+
+    It 'modul inti tidak memakai variabel lingkungan khusus Windows' {
+        $coreModules = @('OpenForensic.psm1', 'OpenForensic.Workflow.psm1')
+        foreach ($name in $coreModules) {
+            $path = Join-Path $script:RepoRoot $name
+            if (-not (Test-Path -LiteralPath $path)) { continue }
+            $content = Get-Content -LiteralPath $path -Raw
+            $content | Should -Not -Match '\$env:TEMP' -Because "$name harus memakai Get-OFTempDirectory"
+            $content | Should -Not -Match '\$env:ComSpec' -Because "$name tidak boleh bergantung pada cmd.exe"
+        }
+    }
+
+    It 'hanya lapisan platform yang memakai flag $IsWindows' {
+        $modules = Get-ChildItem -Path $script:RepoRoot -Filter '*.psm1' -File |
+            Where-Object { $_.Name -ne 'OpenForensic.Platform.psm1' }
+        foreach ($module in $modules) {
+            $content = Get-Content -LiteralPath $module.FullName -Raw
+            $content | Should -Not -Match '\$IsWindows' -Because "$($module.Name) harus memakai Test-OFWindows"
+        }
     }
 
     It 'mengekspor seluruh fungsi yang dideklarasikan di manifest' {
