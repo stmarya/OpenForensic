@@ -8,6 +8,8 @@ cases/
 artifacts/
 recovered/
 hayabusa_timeline.csv
+timeline_*.csv
+ioc_*.csv
 *_report.txt
 *_report.json
 *.ai.md
@@ -15,6 +17,7 @@ hayabusa_timeline.csv
 # Rahasia & konfigurasi lokal
 .ai_config
 .ai_settings.json
+.ai_models.json
 .env
 *.key
 *.pem
@@ -22,6 +25,9 @@ hayabusa_timeline.csv
 # Rule/wordlist besar yang diunduh manual
 rules/
 wordlists/
+
+# Allowlist hash boleh di-commit (bukan data bukti), kecuali dump besar
+allowlist/*.tmp
 
 # Python
 __pycache__/

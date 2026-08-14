@@ -4,6 +4,67 @@ Semua perubahan penting pada proyek ini dicatat di file ini.
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id/1.1.0/)
 dan proyek ini memakai [Semantic Versioning](https://semver.org/lang/id/).
 
+## [0.4.0] - 2026-08-15
+
+### Ditambahkan
+
+- **Lapisan integritas dan reproduktifitas bukti** (`OpenForensic.Integrity.psm1`, 17 fungsi):
+  - `New-OFCaseManifest` / `Test-OFCaseManifest`: manifest SHA256 seluruh berkas kasus dengan
+    deteksi berkas dimodifikasi, hilang, dan ditambahkan.
+  - `New-OFCaseSeal` / `Test-OFCaseSeal`: segel HMAC-SHA256 atas manifest, kunci DPAPI
+    (satu mesin) atau PBKDF2 120.000 iterasi (lintas mesin).
+  - `Update-OFCaseToolVersions` / `Get-OFToolVersion`: snapshot versi tool untuk reproduktifitas.
+  - `Protect-OFEvidenceFile` / `Test-OFEvidenceLock`: write-block lunak dan deteksi berkas terkunci.
+  - `Get-OFHashAllowlist`, `Test-OFHashAllowlist`, `Add-OFHashToAllowlist`, `Import-OFHashAllowlist`:
+    allowlist hash untuk menekan positif palsu.
+  - `Test-OFEvidenceDuplicate`: deduplikasi bukti berbasis SHA256.
+  - `Invoke-OFProcessWithTimeout`: eksekusi proses dengan batas waktu sehingga tool yang
+    menggantung tidak membekukan pemeriksaan.
+  - `Get-OFIntegrityStatus` / `Format-OFIntegritySummary` / `Invoke-OFCaseSealWorkflow`.
+- **Super-timeline, MITRE ATT&CK, dan ekspor IOC** (`OpenForensic.Timeline.psm1`, 11 fungsi):
+  - Skema kejadian ternormalisasi `timestamp | source | actor | action | target | detail |
+    severity | evidenceId | mitre` untuk semua sumber.
+  - `Import-OFTimelineCsv` dengan deteksi kolom waktu otomatis (Hayabusa, Chainsaw, MFTECmd,
+    evtx_dump, CSV umum), `Import-OFTimelineFromCase`, `Invoke-OFTimelineWorkflow`.
+  - `Get-OFTimeline` (filter waktu/sumber/severity + deduplikasi), `Export-OFTimeline`
+    (CSV, JSON, Markdown).
+  - `Update-OFCaseMitre` / `Get-OFMitreTechnique` / `Get-OFMitreSummary`: pemetaan ATT&CK
+    deterministik dari detektor artefak dan dari teknik yang disebut langsung oleh tool
+    (capa, Sigma/Hayabusa, Chainsaw). Prompt injection dipetakan ke MITRE ATLAS `AML.T0051`.
+  - `Export-OFCaseIoc`: ekspor IOC ke CSV, JSON, STIX 2.1 bundle, dan MISP Event.
+- **Registry model AI milik pengguna** (`OpenForensic.Models.psm1`, 11 fungsi):
+  - `Register-OFAiModel`, `Get-OFAiModelList`, `Use-OFAiModel`, `Remove-OFAiModel`,
+    `Test-OFAiModel`, `Test-OFAiModelAll`, `Initialize-OFAiModelDefaults`.
+  - 11 preset: OpenAI, Azure OpenAI, OpenRouter, Groq, Together, DeepSeek, Mistral, Gemini,
+    LM Studio, vLLM, Ollama. API key tidak pernah disimpan di registry, hanya nama variabel
+    environment-nya.
+  - `Get-OFAiCaseContext` dan `Invoke-OFAiDeepAnalysis`: analisis AI yang memakai timeline,
+    pemetaan MITRE, dan status integritas sebagai konteks; keluaran memuat kronologi naratif,
+    penilaian dampak, catatan integritas, dan kesenjangan bukti.
+  - `Invoke-OFCompleteWorkflow`: satu perintah untuk analisis -> timeline -> MITRE -> versi
+    tool -> AI -> report/timeline/IOC -> manifest + segel.
+- Dokumentasi baru: `docs/INTEGRITY.md`, `docs/TIMELINE.md`, `docs/AI-MODELS.md`.
+- Test suite baru untuk integritas (manifest, segel, allowlist, dedup, timeout), timeline
+  (normalisasi waktu, deteksi kolom, MITRE, ekspor IOC/STIX/MISP), dan registry model AI.
+
+### Diubah
+
+- `case.ps1` mendapat `-Complete`, `-CompleteExisting`, `-Timeline`, `-ExportTimeline`,
+  `-ExportIoc`, `-Seal`, `-SealPassphrase`, `-VerifyIntegrity`, `-DeepAi`, `-Model`,
+  `-ListModels`, dan `-TestModels`. Penambahan bukti kini melewati duplikat secara otomatis.
+  `-VerifyIntegrity` mengembalikan exit code 3 bila integritas bermasalah.
+- Manifest `OpenForensic.psd1` versi 0.4.0: lima nested module dan 90 fungsi terekspor.
+- `.gitignore` menutup `.ai_models.json` serta ekspor timeline/IOC yang tercecer di root.
+
+### Catatan keterbatasan
+
+- Eksekusi tool paralel belum diaktifkan: mutasi state kasus dari beberapa runspace berisiko
+  merusak `case.json`. Batas waktu per tool sudah tersedia lewat `Invoke-OFProcessWithTimeout`.
+- Segel DPAPI hanya dapat diverifikasi pada akun dan mesin yang sama; gunakan mode passphrase
+  untuk penyerahan bukti lintas pihak.
+- API native Anthropic belum didukung langsung karena tidak OpenAI-compatible; gunakan
+  OpenRouter atau proxy OpenAI-compatible.
+
 ## [0.3.0] - 2026-08-14
 
 ### Ditambahkan
