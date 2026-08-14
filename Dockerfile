@@ -8,7 +8,13 @@
 #   docker build -t openforensic:latest .
 #
 # Jalankan menu dengan folder bukti dan folder kasus di-mount:
-#   docker run --rm -it -v "$PWD/evidence:/evidence:ro" -v "$PWD/cases:/work/cases" openforensic:latest
+#   docker run --rm -it \
+#     -v "$PWD/evidence:/evidence:ro" \
+#     -v "$PWD/cases:/opt/openforensic/cases" \
+#     openforensic:latest
+#
+# Catatan: direktori kasus toolkit berada di /opt/openforensic/cases, jadi volume
+# host harus dipasang ke path tersebut agar hasil pemeriksaan tidak hilang.
 #
 FROM mcr.microsoft.com/powershell:7.4-ubuntu-22.04
 
@@ -19,7 +25,7 @@ LABEL org.opencontainers.image.title="OpenForensic" \
 
 ENV DEBIAN_FRONTEND=noninteractive \
     OPENFORENSIC_IN_CONTAINER=1 \
-    OPENFORENSIC_NONINTERACTIVE=0 \
+    OPENFORENSIC_HOME=/opt/openforensic \
     PATH="/root/.local/bin:/opt/openforensic/bin:${PATH}"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -54,9 +60,8 @@ COPY . /opt/openforensic
 
 RUN chmod +x /opt/openforensic/openforensic.sh /opt/openforensic/setup_tools.sh || true
 
-# Direktori kerja pemeriksa: kasus dan bukti sebaiknya di-mount dari host.
-RUN mkdir -p /work/cases /evidence
-VOLUME ["/work/cases", "/evidence"]
-ENV OPENFORENSIC_HOME=/work
+# Direktori kasus, laporan, dan bukti sebaiknya di-mount dari host.
+RUN mkdir -p /opt/openforensic/cases /opt/openforensic/reports /evidence
+VOLUME ["/opt/openforensic/cases", "/opt/openforensic/reports", "/evidence"]
 
 ENTRYPOINT ["pwsh", "-NoLogo", "-NoProfile", "-File", "/opt/openforensic/menu.ps1"]

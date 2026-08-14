@@ -1,0 +1,36 @@
+# Normalisasi akhir baris agar proyek konsisten di Windows, Linux, dan macOS.
+# Tanpa aturan ini, checkout di Windows mengubah script POSIX menjadi CRLF dan
+# script gagal dijalankan dengan galat "bad interpreter".
+
+* text=auto eol=lf
+
+# Script POSIX wajib LF.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+
+# Script Windows boleh CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# PowerShell dinormalkan ke LF; PowerShell 5.1 dan 7 sama-sama menerimanya.
+*.ps1 text eol=lf
+*.psm1 text eol=lf
+*.psd1 text eol=lf
+
+# Fixture pengujian tidak boleh diubah sama sekali karena hash dan jumlah baris diuji.
+tests/fixtures/** text eol=lf
+
+# Berkas biner.
+*.png binary
+*.jpg binary
+*.gif binary
+*.zip binary
+*.7z binary
+*.exe binary
+*.dll binary
+*.raw binary
+*.evtx binary

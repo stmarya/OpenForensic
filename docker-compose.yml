@@ -4,8 +4,9 @@
 #   docker compose run --rm openforensic              # menu interaktif
 #   docker compose run --rm openforensic-cli -List    # CLI case.ps1
 #
-# Letakkan berkas bukti di ./evidence (di-mount read-only) dan hasil kasus
-# akan muncul di ./cases pada mesin host.
+# Letakkan berkas bukti di ./evidence (di-mount read-only). Folder ./cases di host
+# di-mount tepat ke direktori kasus yang dipakai toolkit di dalam kontainer,
+# sehingga seluruh hasil pemeriksaan tetap ada setelah kontainer berhenti.
 
 services:
   openforensic:
@@ -15,14 +16,15 @@ services:
     tty: true
     environment:
       - OPENFORENSIC_IN_CONTAINER=1
-      - OPENFORENSIC_HOME=/work
+      - OPENFORENSIC_HOME=/opt/openforensic
       - OPENFORENSIC_AI_KEY=${OPENFORENSIC_AI_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
     volumes:
       - ./evidence:/evidence:ro
-      - ./cases:/work/cases
+      - ./cases:/opt/openforensic/cases
+      - ./reports:/opt/openforensic/reports
       - ./rules:/opt/openforensic/rules
 
   openforensic-cli:
@@ -33,11 +35,12 @@ services:
     entrypoint: ["pwsh", "-NoLogo", "-NoProfile", "-File", "/opt/openforensic/case.ps1"]
     environment:
       - OPENFORENSIC_IN_CONTAINER=1
-      - OPENFORENSIC_HOME=/work
+      - OPENFORENSIC_HOME=/opt/openforensic
       - OPENFORENSIC_AI_KEY=${OPENFORENSIC_AI_KEY:-}
     volumes:
       - ./evidence:/evidence:ro
-      - ./cases:/work/cases
+      - ./cases:/opt/openforensic/cases
+      - ./reports:/opt/openforensic/reports
 
   # Model AI lokal agar data bukti tidak pernah keluar dari mesin pemeriksa.
   ollama:
