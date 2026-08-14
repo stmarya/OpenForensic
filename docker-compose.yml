@@ -1,0 +1,52 @@
+# OpenForensic - jalankan tanpa memasang apa pun selain Docker.
+#
+#   docker compose build
+#   docker compose run --rm openforensic              # menu interaktif
+#   docker compose run --rm openforensic-cli -List    # CLI case.ps1
+#
+# Letakkan berkas bukti di ./evidence (di-mount read-only) dan hasil kasus
+# akan muncul di ./cases pada mesin host.
+
+services:
+  openforensic:
+    build: .
+    image: openforensic:latest
+    stdin_open: true
+    tty: true
+    environment:
+      - OPENFORENSIC_IN_CONTAINER=1
+      - OPENFORENSIC_HOME=/work
+      - OPENFORENSIC_AI_KEY=${OPENFORENSIC_AI_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+    volumes:
+      - ./evidence:/evidence:ro
+      - ./cases:/work/cases
+      - ./rules:/opt/openforensic/rules
+
+  openforensic-cli:
+    build: .
+    image: openforensic:latest
+    stdin_open: true
+    tty: true
+    entrypoint: ["pwsh", "-NoLogo", "-NoProfile", "-File", "/opt/openforensic/case.ps1"]
+    environment:
+      - OPENFORENSIC_IN_CONTAINER=1
+      - OPENFORENSIC_HOME=/work
+      - OPENFORENSIC_AI_KEY=${OPENFORENSIC_AI_KEY:-}
+    volumes:
+      - ./evidence:/evidence:ro
+      - ./cases:/work/cases
+
+  # Model AI lokal agar data bukti tidak pernah keluar dari mesin pemeriksa.
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ai-local"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+
+volumes:
+  ollama:

@@ -1,0 +1,16 @@
+cases/
+reports/
+artifacts/
+recovered/
+bin/
+volatility3/
+rules/
+wordlists/
+.git/
+.github/
+.ai_config
+.ai_settings.json
+.ai_models.json
+TestResults.xml
+__pycache__/
+*.log
